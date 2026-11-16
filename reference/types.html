@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>核心类型关系 · rustrtc</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "strict" });
+</script>
+</head>
+<body>
+<header class="course">rustrtc 学习 · 参考 · 0.6.4 / e13b5f2 · <a href="../lessons/0001-overview.html">第 1 课</a></header>
+
+<h1>核心类型关系</h1>
+<p class="lede">全部路径和行号钉在提交 <code>e13b5f2</code>。图出不来时，下面的源文本和表格仍然可读。</p>
+
+<pre class="mermaid">
+flowchart TB
+  RC["RtcConfiguration<br/>src/config.rs:602"]
+  C["Connectivity<br/>Sdp | IceLite | Ice<br/>src/config.rs:149"]
+  K["Keying<br/>None | Sdes | Dtls<br/>src/config.rs:171"]
+  RC --> C
+  RC --> K
+
+  PC["PeerConnection<br/>src/peer_connection.rs:699"]
+  PC --> RC
+  PC --> ICE["IceTransport<br/>src/transports/ice/mod.rs:290"]
+  PC -.-> DTLS["Option DtlsTransport<br/>src/transports/dtls/mod.rs:264"]
+  PC -.-> RTP["Option RtpTransport<br/>src/transports/rtp.rs:534"]
+  PC -.-> SCTP["Option SctpTransport<br/>src/transports/sctp.rs:824"]
+  PC --> TRX["RtpTransceiver<br/>src/peer_connection.rs:7003"]
+  PC --> DC["DataChannel<br/>src/transports/datachannel.rs:163"]
+
+  ICE --> STUN["StunMessage<br/>ice/stun.rs:14"]
+  ICE --> TURN["TurnClient<br/>ice/turn.rs:52"]
+  ICE --> CAND["IceCandidate<br/>ice/mod.rs:4717"]
+
+  DTLS --> CERT["Certificate<br/>dtls/mod.rs:188"]
+  RTP --> SRTP["SrtpSession<br/>src/srtp.rs:145"]
+  RTP --> PKT["RtpPacket<br/>src/rtp.rs:311"]
+  SCTP --> DC
+
+  TRX --> SND["RtpSender<br/>peer_connection.rs:7376"]
+  TRX --> RCV["RtpReceiver<br/>peer_connection.rs:8091"]
+  SND --> MST["MediaStreamTrack<br/>src/media/track.rs:33"]
+  RCV --> SST["SampleStreamTrack<br/>src/media/track.rs:70"]
+</pre>
+
+<p class="source"><code>PeerConnectionInner</code>（<code>src/peer_connection.rs:703</code>，非公开）里，<code>dtls_transport</code> / <code>rtp_transport</code> / <code>sctp_transport</code> 都是 <code>Option</code>：按 <code>Keying</code> 和是否有应用 m-line 再创建。虚线表示可选。</p>
+
+<h2>配置与入口</h2>
+<table class="types">
+<thead><tr><th>类型</th><th>位置</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td><code>Connectivity</code></td><td><code>src/config.rs:149</code></td><td><code>Sdp</code>、<code>IceLite</code>、<code>Ice</code></td></tr>
+<tr><td><code>Keying</code></td><td><code>src/config.rs:171</code></td><td><code>None</code>、<code>Sdes</code>、<code>Dtls</code>；数据通道需要 <code>Dtls</code>（:167–169）</td></tr>
+<tr><td><code>RtcConfiguration</code></td><td><code>src/config.rs:602</code></td><td>无 <code>Default</code>。从 <code>webrtc()</code>（:967）或 <code>sip()</code>（:981）起步</td></tr>
+<tr><td><code>RtcConfigurationBuilder</code></td><td><code>src/config.rs:1068</code></td><td>同样只有 <code>webrtc()</code>（:1121）和 <code>sip()</code>（:1128），没有 <code>new()</code></td></tr>
+<tr><td><code>PeerConnection</code></td><td><code>src/peer_connection.rs:699</code></td><td><code>new</code> 在 :899；外壳 + <code>Arc&lt;PeerConnectionInner&gt;</code></td></tr>
+<tr><td><code>PeerConnectionEvent</code></td><td><code>src/peer_connection.rs:681</code></td><td><code>DataChannel(...)</code> 或 <code>Track(RtpTransceiver)</code>，经 <code>recv()</code>（:3960）取出</td></tr>
+<tr><td><code>SignalingState</code></td><td><code>src/peer_connection.rs:6883</code></td><td>本地 offer/answer 状态机，不是信令传输</td></tr>
+<tr><td><code>PeerConnectionState</code></td><td><code>src/peer_connection.rs:6817</code></td><td><code>New</code> … <code>Closed</code></td></tr>
+<tr><td><code>IceConnectionState</code></td><td><code>src/peer_connection.rs:6891</code></td><td>ICE 连通性</td></tr>
+<tr><td><code>IceGatheringState</code></td><td><code>src/peer_connection.rs:6902</code></td><td><code>New</code> / <code>Gathering</code> / <code>Complete</code></td></tr>
+</tbody>
+</table>
+
+<h2>SDP 与传输</h2>
+<table class="types">
+<thead><tr><th>类型</th><th>位置</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td><code>SdpType</code></td><td><code>src/sdp.rs:15</code></td><td><code>Offer</code> / <code>Answer</code> / <code>Pranswer</code> / <code>Rollback</code></td></tr>
+<tr><td><code>SessionDescription</code></td><td><code>src/sdp.rs:34</code></td><td><code>sdp_type</code> + session + media sections</td></tr>
+<tr><td><code>MediaKind</code></td><td><code>src/sdp.rs:704</code></td><td><code>Audio</code> / <code>Video</code> / <code>Application</code> / <code>Image</code></td></tr>
+<tr><td><code>CryptoAttribute</code></td><td><code>src/sdp.rs:767</code></td><td>SDES 的 <code>a=crypto</code></td></tr>
+<tr><td><code>IceTransport</code></td><td><code>src/transports/ice/mod.rs:290</code></td><td>完整 ICE 或直连底下的那条路</td></tr>
+<tr><td><code>IceCandidate</code></td><td><code>src/transports/ice/mod.rs:4717</code></td><td>采集到的候选</td></tr>
+<tr><td><code>StunMessage</code></td><td><code>src/transports/ice/stun.rs:14</code></td><td>STUN 报文</td></tr>
+<tr><td><code>TurnClient</code></td><td><code>src/transports/ice/turn.rs:52</code></td><td>TURN 客户端</td></tr>
+<tr><td><code>DtlsTransport</code></td><td><code>src/transports/dtls/mod.rs:264</code></td><td>DTLS 1.2 握手与导出</td></tr>
+<tr><td><code>Certificate</code></td><td><code>src/transports/dtls/mod.rs:188</code></td><td>DTLS 证书</td></tr>
+<tr><td><code>RtpTransport</code></td><td><code>src/transports/rtp.rs:534</code></td><td>媒体路径；可挂 <code>SrtpSession</code></td></tr>
+<tr><td><code>SctpTransport</code></td><td><code>src/transports/sctp.rs:824</code></td><td>数据通道底下的 SCTP 关联</td></tr>
+</tbody>
+</table>
+
+<h2>媒体、SRTP、数据通道</h2>
+<table class="types">
+<thead><tr><th>类型</th><th>位置</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td><code>RtpTransceiver</code></td><td><code>src/peer_connection.rs:7003</code></td><td>一条 m-line：方向、mid、sender/receiver</td></tr>
+<tr><td><code>TransceiverDirection</code></td><td><code>src/peer_connection.rs:6909</code></td><td><code>SendRecv</code> / <code>SendOnly</code> / <code>RecvOnly</code> / <code>Inactive</code></td></tr>
+<tr><td><code>RtpSender</code></td><td><code>src/peer_connection.rs:7376</code></td><td>持有 <code>Arc&lt;dyn MediaStreamTrack&gt;</code></td></tr>
+<tr><td><code>RtpReceiver</code></td><td><code>src/peer_connection.rs:8091</code></td><td>持有 <code>SampleStreamTrack</code></td></tr>
+<tr><td><code>MediaStreamTrack</code></td><td><code>src/media/track.rs:33</code></td><td>track 特质：<code>id</code> / <code>kind</code> / <code>recv</code></td></tr>
+<tr><td><code>SampleStreamTrack</code></td><td><code>src/media/track.rs:70</code></td><td>常用的样本队列实现</td></tr>
+<tr><td><code>Packetizer</code></td><td><code>src/media/packetizer.rs:17</code></td><td>把帧切成 RTP</td></tr>
+<tr><td><code>JitterBuffer</code></td><td><code>src/media/jitter_buffer.rs:105</code></td><td>收端重排与延时</td></tr>
+<tr><td><code>RtpHeader</code> / <code>RtpPacket</code></td><td><code>src/rtp.rs:46</code> / <code>:311</code></td><td>RFC 3550 包格式</td></tr>
+<tr><td><code>SrtpProfile</code></td><td><code>src/srtp.rs:55</code></td><td>AES-CM / AEAD-GCM 等</td></tr>
+<tr><td><code>SrtpSession</code></td><td><code>src/srtp.rs:145</code></td><td>按 SSRC 保护/解保护</td></tr>
+<tr><td><code>DataChannel</code></td><td><code>src/transports/datachannel.rs:163</code></td><td>crate 根经 <code>transports::sctp</code>（<code>sctp.rs:5</code>，<code>lib.rs:96</code>）再导出</td></tr>
+<tr><td><code>DataChannelConfig</code></td><td><code>src/transports/datachannel.rs:148</code></td><td><code>create_data_channel(label, Option&lt;...&gt;)</code>，见 <code>peer_connection.rs:4119</code></td></tr>
+<tr><td><code>DataChannelEvent</code></td><td><code>src/transports/datachannel.rs:116</code></td><td><code>Open</code> / <code>Message</code> / <code>Close</code> / <code>BufferedAmountLow</code></td></tr>
+<tr><td><code>DataChannelState</code></td><td><code>src/transports/datachannel.rs:128</code></td><td><code>Connecting</code> / <code>Open</code> / <code>Closing</code> / <code>Closed</code></td></tr>
+</tbody>
+</table>
+
+<footer>核实环境：rustrtc 0.6.4 / 提交 e13b5f2 · 2026-11-16</footer>
+</body>
+</html>

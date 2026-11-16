@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 2 课：巩固 ICE</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="course">rustrtc 学习 · 第 2 课 · 0.6.4 / e13b5f2 · <a href="0001-overview.html">第 1 课</a> · <a href="../reference/ice-cheatsheet.html">ICE 速查</a></header>
+
+<h1>巩固 ICE：从候选到选中的那一对</h1>
+<p class="lede">十分钟看完候选类型、优先级、ufrag/pwd、检查和提名。每一步对到提交 <code>e13b5f2</code> 的源码，并看一段刚跑出来的日志。</p>
+
+<h2>1. 先对一下</h2>
+<p>第 1 课的地图还在：信令（HTTP / SIP）在栈外交换 SDP；ICE 只负责找出一条能通的 UDP 路，不加密。下面按「候选 → 优先级 → 凭证 → 检查与提名」把 ICE 补扎实。</p>
+
+<h2>2. 候选类型</h2>
+<p>RFC 8445 定义四种类型。采集阶段会出现前三种里的 host，以及（配了服务器时的）srflx 和 relay；prflx 是检查过程中才发现的。</p>
+<table>
+<thead><tr><th>类型</th><th>SDP 里怎么写</th><th>是什么</th><th>type preference</th><th>rustrtc @ e13b5f2</th></tr></thead>
+<tbody>
+<tr><td>host</td><td><code>typ host</code></td><td>本机网卡上绑到的地址</td><td>126</td><td><code>IceCandidate::host</code>，<code>src/transports/ice/mod.rs:4769</code>；采集在 <code>gather_host_candidates</code> :5749</td></tr>
+<tr><td>srflx</td><td><code>typ srflx</code></td><td>向 STUN 发 Binding，从 XOR-MAPPED-ADDRESS 看到的 NAT 外侧地址</td><td>100</td><td><code>IceCandidate::server_reflexive</code> :4828；<code>probe_stun</code> :6138</td></tr>
+<tr><td>relay</td><td><code>typ relay</code></td><td>向 TURN 做 Allocate，得到的中继地址</td><td>0</td><td><code>IceCandidate::relay</code> :4842；<code>probe_turn</code> :6197，<code>TurnClient::allocate</code> <code>turn.rs:147</code></td></tr>
+<tr><td>prflx</td><td><code>typ prflx</code></td><td>对端检查打过来时，本端映射和已有候选不同</td><td>110</td><td>检查成功路径上发现，日志是 <code>Discovered peer reflexive candidate</code>（:3750）</td></tr>
+</tbody>
+</table>
+<p>枚举是 <code>IceCandidateType</code>（:4988）。写进 SDP 用 <code>to_sdp</code>（:4889），读回来用 <code>from_sdp</code>（:4919）。服务器列表在 <code>RtcConfiguration::ice_servers</code>（<code>src/config.rs:606</code>），默认是空的：不配 <code>stun:</code> / <code>turn:</code> 就只有 host。<span class="source">出处：<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.1">RFC 8445 §5.1.1</a>；推荐 type preference 见 <a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.2.2">§5.1.2.2</a>。</span></p>
+
+<h3>优先级公式</h3>
+<p>源码和 RFC 是同一个式子（<code>priority_for</code>，:4856–4866）：</p>
+<pre><code>priority = (type_pref &lt;&lt; 24) | (local_pref &lt;&lt; 8) | (256 - component)
+// UDP 的 local_pref 固定 65535；component 1 是 RTP（rtcp-mux 时也只用 1）</code></pre>
+<p>host + component 1 算出来是 <code>2130706431</code>。下面真实 offer 里就能看到这个数。</p>
+<p>候选对还有自己的优先级（<code>IceCandidatePair::priority</code>，:5022–5029；G 是 controlling 那端的候选优先级，D 是 controlled 的）：</p>
+<pre><code>pair_priority = 2^32 * min(G, D) + 2 * max(G, D) + (G &gt; D ? 1 : 0)</code></pre>
+<p class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.2.1">RFC 8445 §5.1.2.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.2.3">§6.1.2.3</a>。</p>
+
+<h2>3. SDP 里的凭证和候选</h2>
+<p>我在共享电脑上跑了 <code>playground/ice_loopback</code>：两台 <code>PeerConnection::webrtc()</code>，等收集完成再交换 SDP（不是 Trickle）。offer 里的 ICE 行是：</p>
+<pre class="output"><code>m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+a=ice-ufrag:1c956ee891287fc5
+a=ice-pwd:53bd5b188e745d32657e274f751fa50e
+a=candidate:42c85eb97134975e 1 udp 2130706431 172.30.0.2 41795 typ host
+a=candidate:2d593ec349bdb740 1 udp 2130706431 172.17.0.1 34716 typ host
+a=end-of-candidates</code></pre>
+<p>这几行从哪来：</p>
+<ul>
+<li><code>ice-ufrag</code> / <code>ice-pwd</code> 来自 <code>IceParameters::generate</code>（:5051）：ufrag 是 8 字节随机数的十六进制（16 个字符），pwd 是 16 字节（32 个字符）。写进 SDP 在 <code>src/peer_connection.rs:5819–5822</code>，值从 <code>ice_transport.local_parameters()</code>（同文件 :5623）取出。</li>
+<li>收集完成后不再写 <code>a=ice-options:trickle</code>，而是写 <code>a=end-of-candidates</code>（:5823–5841）。这是 vanilla ICE：对端不必再等后续候选。Trickle 时用 <code>PeerConnection::add_ice_candidate</code>（:4293），它转给 <code>IceTransport::add_remote_candidate</code>（<code>mod.rs:2104</code>）。</li>
+</ul>
+<p>STUN Binding 请求里的 USERNAME 是 <code>远端ufrag:本地ufrag</code>，MESSAGE-INTEGRITY 用<strong>远端</strong>的 pwd 算（<code>perform_binding_check</code>，:4147–4165）。<span class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.2">RFC 8445 §7.2.2</a>。</span></p>
+
+<h2>4. 角色、检查、提名</h2>
+<p>谁发 offer，谁就是 controlling：<code>create_offer</code> 在两边都还没有 local/remote description 时调用 <code>set_role(IceRole::Controlling)</code>（<code>src/peer_connection.rs:1538–1541</code>）。answerer 默认 <code>Controlled</code>（:1574–1585）；对端是 ICE-lite 时除外，full 的一方必须当 controlling。</p>
+<p>两边都有远程凭证和对方候选之后，<code>perform_connectivity_checks_async</code>（<code>mod.rs:2227</code>）把本地×远程配成 <code>IceCandidatePair</code>（:5007），再对每一对做 STUN Binding 检查（<code>perform_binding_check</code>，:4106）：</p>
+<pre><code>let mut msg = StunMessage::binding_request(tx_id, Some("rustrtc")); // stun.rs:22
+msg.attributes.push(StunAttribute::Username(format!("{}:{}",
+    remote_params.username_fragment, local_params.username_fragment)));
+msg.attributes.push(StunAttribute::Priority(local.priority));
+// controlling → IceControlling(tie_breaker)；nominated 时再加 UseCandidate
+// controlled  → IceControlled(tie_breaker)
+let bytes = msg.encode(Some(remote_params.password.as_bytes()), true)?;</code></pre>
+<p>成功的一对进入有效列表。controlling 等 <code>nomination_grace</code>（默认 200 ms，<code>src/config.rs:703、1019</code>）后调用 <code>nominate_best_pair</code>（:2711）：按对优先级排序，再发一条带 <code>USE-CANDIDATE</code> 的 Binding（:2785，属性定义在 <code>stun.rs:103</code>）。controlled 收到后跟随（:3964–3970），必要时代替先选中的临时路径。选中的那一对经 <code>commit_selected_pair</code>（:2687）发布。<span class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.4">RFC 8445 §6.1.4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7">§7</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-8">§8</a>；STUN 报文见 <a href="https://www.rfc-editor.org/rfc/rfc8489.html">RFC 8489</a>。</span></p>
+
+<h2>5. 一段按时间排的真实日志</h2>
+<p>同一轮 <code>playground/ice_loopback</code>，<code>RUST_LOG=rustrtc=debug</code>。时间戳带 <code>Z</code> 是 UTC；换到 Asia/Tokyo 是 <strong>2026-11-16 14:45:20</strong>。库在 debug 级不打印每一条 Binding 收发，成功的检查打 <code>ICE successful pair</code>，提名再打下面这几行。</p>
+<pre class="output"><code>14:45:20.160882  Gathered local candidate: 172.30.0.2:41795 type=Host
+14:45:20.161036  Gathered local candidate: 172.17.0.1:34716 type=Host
+                 （offer SDP 已见上一节；随后 answerer 采到 172.30.0.2:38409 和 172.17.0.1:53500）
+14:45:20.163529  ICE successful pair (controlled): local 172.17.0.1:53500 Host -&gt; remote 172.30.0.2:41795 Host  label="answerer"
+14:45:20.163585  ICE checks complete. Selected pair: 172.17.0.1:53500 -&gt; 172.30.0.2:41795  label="answerer"
+14:45:20.163592  Controlled checks complete without nomination — waiting for USE-CANDIDATE
+14:45:20.164014  ICE successful pair (controlling): local 172.30.0.2:41795 Host -&gt; remote 172.30.0.2:38409 Host  label="offerer"
+14:45:20.164064  Controlling agent nominating pair: 172.30.0.2:41795 -&gt; 172.30.0.2:38409
+14:45:20.164239  Nomination succeeded: 172.30.0.2:41795 -&gt; 172.30.0.2:38409
+14:45:20.164291  ICE checks complete. Selected pair: 172.30.0.2:41795 -&gt; 172.30.0.2:38409  label="offerer"
+14:45:20.164199  Controlled agent deferring switch to newly nominated path 172.30.0.2:38409 -&gt; 172.30.0.2:41795 until its triggered check answers
+14:45:20.164430  Nominated path 172.30.0.2:38409 -&gt; 172.30.0.2:41795 verified, switching (attempt 1)  label="answerer"
+SELECTED offerer:  172.30.0.2:41795 Host -&gt; 172.30.0.2:38409 Host
+SELECTED answerer: 172.30.0.2:38409 Host -&gt; 172.30.0.2:41795 Host</code></pre>
+<p>读法：先收集，再检查，controlled 可以先占一条临时路，但最终以 controlling 提名的那一对为准。这次机器上有一块 DOWN 着的 <code>docker0</code>（<code>172.17.0.1</code>），它也被采成了 host，所以 answerer 起初选中了它；提名把路径纠到 <code>172.30.0.2</code>。</p>
+
+<span class="label">共享 Linux 电脑（已跑过）</span>
+<pre><code>cd /workspace/teaching/rustrtc/playground/ice_loopback
+RUST_LOG=rustrtc=debug cargo run</code></pre>
+
+<span class="label">Windows 11 PowerShell</span>
+<pre><code>cd path\to\teaching\rustrtc\playground\ice_loopback
+# 先把 Cargo.toml 里 rustrtc 的 path 改成你的克隆目录
+$env:RUST_LOG="rustrtc=debug"
+cargo run</code></pre>
+<p>你那边的证明行同样是 <code>Gathered local candidate</code>、<code>Nomination succeeded</code> 和最后的 <code>SELECTED</code>。地址会随网卡变化，优先级 <code>2130706431</code> 和 <code>typ host</code> 应相同。</p>
+<p class="note">仓库 <code>tests/</code> 里虽有两 PC 环回（例如 <code>tests/ice_hold_renegotiation.rs</code>），但它们用 <code>env_logger</code>，而 ICE 日志走 <code>tracing</code>，<code>RUST_LOG=debug cargo test</code> 打不出上面这些行。所以本课用练习程序来看日志。</p>
+
+<h2>6. 何时需要 TURN</h2>
+<p>host 和 srflx 都检查失败时，才走 relay。两边都在对称 NAT 后面、或防火墙把直连打掉，是典型场景。配置是 <code>ice_servers</code> 里加 <code>turn:</code> / <code>turns:</code> URL，并带用户名口令（<code>IceServer</code>，<code>src/config.rs:34</code>）。<code>IceTransportPolicy::Relay</code>（:85）会强制只用中继。采集入口是 <code>gather_servers</code>（<code>mod.rs:6022</code>）。<span class="source"><a href="https://www.rfc-editor.org/rfc/rfc8656.html#section-3">RFC 8656 §3</a>。</span></p>
+
+<h2>7. 回忆题</h2>
+
+<div class="quiz" id="q1" data-ok-text="对。RFC 8445 §5.1.2.2 把 relay 的 type preference 定为 0；源码 IceCandidate::priority_for（mod.rs:4861）同样是 0，中继是最后手段。" data-bad-text="不对。再看类型表里那一列 type preference，谁是 0？">
+<p class="q">按 RFC 8445 推荐值，type preference 为 0 的候选类型是？</p>
+<button data-ok="0">host 本机网卡上的候选</button>
+<button data-ok="0">prflx 对端反射的候选</button>
+<button data-ok="0">srflx 服务器反射候选</button>
+<button data-ok="1">relay 中继服务器候选</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q2" data-ok-text="对。只有 controlling 在nominate_best_pair 里把 nominated=true 传给 perform_binding_check，才会带上 USE-CANDIDATE（mod.rs:2785、4157–4159）。" data-bad-text="不对。想一想谁负责提名、谁等待跟随。">
+<p class="q">连通性检查成功后，谁发出带 USE-CANDIDATE 的 Binding 请求？</p>
+<button data-ok="1">ICE 里控制角色的那一端</button>
+<button data-ok="0">ICE 里被控角色的那一端</button>
+<button data-ok="0">ICE 里先收到检查的一端</button>
+<button data-ok="0">ICE 里后完成收集的一端</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q3" data-ok-text="对。USERNAME 是 remote_ufrag:local_ufrag，MESSAGE-INTEGRITY 用远端密码（mod.rs:4147–4165；RFC 8445 §7.2.2）。" data-bad-text="不对。再看 Binding 请求里 USERNAME 的拼接顺序。">
+<p class="q">STUN Binding 请求里的 USERNAME 怎么拼？</p>
+<button data-ok="1">远端 ufrag 在前、本地在后</button>
+<button data-ok="0">本地 ufrag 在前、远端在后</button>
+<button data-ok="0">只放本地这一侧的那个 ufrag</button>
+<button data-ok="0">只放远端那一侧的那个 ufrag</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q4" data-ok-text="对。TURN 是直连（host / srflx）都走不通时的退路。只因为对端在 NAT 后、或仅仅启用了 ICE，并不自动需要中继；本机两进程互连通常 host 就够。" data-bad-text="不对。想一想中继是优先路径，还是直连都失败以后的退路。">
+<p class="q">什么时候才需要配置 TURN（relay）？</p>
+<button data-ok="1">直连候选全部失败以后再用中继</button>
+<button data-ok="0">对端位于 NAT 后立刻启用</button>
+<button data-ok="0">只要启用 ICE 就必须启用</button>
+<button data-ok="0">本机两个进程互连也必须用中继</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+<script src="../assets/quiz.js"></script>
+
+<h2>主要阅读</h2>
+<p><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.2">RFC 8445 §5.1.2</a>：先看推荐公式和 type preference，再回头对照 <code>IceCandidate::priority_for</code>（<code>src/transports/ice/mod.rs:4856</code>）。想一次看完流程，用 <a href="../reference/ice-cheatsheet.html">ICE 速查</a>。</p>
+
+<p>有任何不清楚的，随时直接问我。</p>
+
+<nav class="next">
+<span><a href="0001-overview.html">第 1 课：全景</a></span>
+<span></span>
+</nav>
+<footer>核实环境：rustrtc 0.6.4 / rustc 1.100.0 / 提交 e13b5f2 · 日志采于 2026-11-16 14:45:20（Asia/Tokyo）</footer>
+</body>
+</html>

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 1 课：rustrtc 全景</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="course">rustrtc 学习 · 第 1 课 · 0.6.4 / e13b5f2 · <a href="../reference/types.html">核心类型</a></header>
+
+<h1>全景：信令在外，栈在里</h1>
+<p class="lede">十分钟搞清 rustrtc 管什么、不管什么，以及浏览器和 SIP 怎么共用一套 <code>PeerConnection</code>。</p>
+
+<h2>1. 信令不在这个栈里</h2>
+<p>rustrtc 会<strong>生成和解析 SDP</strong>，并维护本地的 <code>SignalingState</code>（<code>src/peer_connection.rs:6883@e13b5f2</code>）。它<strong>不会</strong>把这段 SDP 送到对端。</p>
+<p>交换 SDP 是应用的事：</p>
+<ul>
+<li>和浏览器：示例用本地 HTTP <code>POST /offer</code>（<code>examples/datachannel_chat.rs</code>、<code>examples/echo_server.rs</code> 都听 <code>127.0.0.1:3000</code>）。</li>
+<li>和 SIP 通话：由 <strong>rsipstack</strong> 把 SDP 放进 INVITE / 200 OK 的 body 里传来传去。rustrtc 只收发 RTP/SRTP 媒体。</li>
+</ul>
+<p>典型顺序（README Usage）：<code>PeerConnection::new</code> → <code>create_offer</code> / <code>create_answer</code> → <code>set_local_description</code> →（应用把 SDP 发出去）→ <code>set_remote_description</code>。全 ICE 时还要 <code>wait_for_gathering_complete</code>，再取带候选的完整 SDP。<span class="source">协议：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-3">RFC 3264 §3</a> Offer/Answer 模型；生成规则见 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-5">§5</a> / <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6">§6</a>。</span></p>
+
+<h2>2. 各层管什么，对应哪段源码</h2>
+<table>
+<thead>
+<tr><th>层</th><th>管什么</th><th>RFC</th><th>源码 @ e13b5f2</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>SDP</td>
+<td>描述会话：编解码、地址、指纹或 <code>a=crypto</code>。不是传输。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-3">3264 §3</a></td>
+<td><code>src/sdp.rs</code>（<code>SessionDescription</code> :34）；offer/answer 在 <code>PeerConnection</code>（<code>create_offer</code> :1524，<code>create_answer</code> :1567）</td>
+</tr>
+<tr>
+<td>ICE</td>
+<td>采集候选、打连通性检查、提名一条路。不加密媒体。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2">8445 §2</a>；lite 见 <a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">§2.5</a>；重启见 <a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-9">§9</a></td>
+<td><code>src/transports/ice/</code>（<code>IceTransport</code> <code>mod.rs:290</code>）</td>
+</tr>
+<tr>
+<td>STUN</td>
+<td>ICE 的工具：Binding 得知 NAT 映射地址，也做检查和保活。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc8489.html#section-1">8489 §1</a></td>
+<td><code>src/transports/ice/stun.rs</code>（<code>StunMessage</code> :14）</td>
+</tr>
+<tr>
+<td>TURN</td>
+<td>直连失败时中继。Allocate 一块中继地址，再 CreatePermission / ChannelData。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc8656.html#section-3">8656 §3</a></td>
+<td><code>src/transports/ice/turn.rs</code>（<code>TurnClient</code> :52）</td>
+</tr>
+<tr>
+<td>DTLS</td>
+<td>在已选路上握手；用 <code>use_srtp</code> 导出 SRTP 密钥。数据通道也跑在 DTLS 上。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc5764.html">5764 摘要</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-3">§3</a> 总览、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1">§4.1</a> <code>use_srtp</code>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">§4.2</a> 密钥导出</td>
+<td><code>src/transports/dtls/</code>（<code>DtlsTransport</code> <code>mod.rs:264</code>）</td>
+</tr>
+<tr>
+<td>SRTP</td>
+<td>加密/认证 RTP 与 RTCP。密钥来自 DTLS 或 SDP 里的 SDES。</td>
+<td>密钥交换见 5764；算法见 <a href="https://www.rfc-editor.org/rfc/rfc3711.html">3711</a>；SDES 见 <a href="https://www.rfc-editor.org/rfc/rfc4568.html">4568</a></td>
+<td><code>src/srtp.rs</code>（<code>SrtpSession</code> :145）</td>
+</tr>
+<tr>
+<td>RTP</td>
+<td>音视频媒体包和 RTCP 反馈。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5">3550 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-6">§6</a></td>
+<td>包格式 <code>src/rtp.rs</code>（<code>RtpPacket</code> :311）；收发 <code>src/transports/rtp.rs</code>（<code>RtpTransport</code> :534）；打包/抖动缓冲 <code>src/media/</code></td>
+</tr>
+<tr>
+<td>SCTP / DataChannel</td>
+<td>非媒体消息。分层是 SCTP over DTLS over ICE/UDP。</td>
+<td><a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-5">8831 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6">§6</a>；建通道 <a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.1">8832 §5.1</a>/<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.2">§5.2</a>（OPEN/ACK）</td>
+<td>SCTP：<code>src/transports/sctp.rs</code>（<code>SctpTransport</code> :824）；通道：<code>src/transports/datachannel.rs</code>（<code>DataChannel</code> :163），经 <code>sctp.rs:5</code> 再从 crate 根再导出</td>
+</tr>
+</tbody>
+</table>
+<p class="source">类型关系图见 <a href="../reference/types.html">核心类型</a>。</p>
+
+<h2>3. 一套 API，两种对端</h2>
+<p><code>PeerConnection</code>（<code>src/peer_connection.rs:699@e13b5f2</code>）吃一份 <code>RtcConfiguration</code>（<code>src/config.rs:602</code>）。配置里两个正交字段决定媒体怎么走：</p>
+<ul>
+<li><code>Connectivity</code>（<code>src/config.rs:149</code>）：路怎么找。变体是 <code>Sdp</code>（用对端 SDP 的 <code>c=</code>/<code>m=</code> 地址，可加 latching）、<code>IceLite</code>（RFC 8445 §2.5，应答检查、跟随提名）、<code>Ice</code>（完整采集与提名）。</li>
+<li><code>Keying</code>（<code>src/config.rs:171</code>）：密钥怎么换。变体是 <code>None</code>（明文 RTP / RTP/AVP）、<code>Sdes</code>（<code>a=crypto</code>，RFC 4568）、<code>Dtls</code>（指纹 + DTLS-SRTP，RFC 5763/5764）。</li>
+</ul>
+<p>任意 Connectivity 可以配任意 Keying。注释写明：数据通道（SCTP）需要 <code>Dtls</code>（<code>src/config.rs:167–169</code>）。</p>
+<p>不要从「默认值」起步，从对端种类起步（<code>RtcConfiguration::webrtc</code> :967，<code>::sip</code> :981）：</p>
+<table>
+<thead><tr><th>预设</th><th>Connectivity</th><th>Keying</th><th>还改了什么</th></tr></thead>
+<tbody>
+<tr><td><code>webrtc()</code>，对浏览器 / SFU</td><td><code>Ice</code></td><td><code>Dtls</code></td><td><code>webrtc_extensions = true</code>，<code>rtcp_mux_policy = Require</code>，<code>bundle_policy = MaxBundle</code></td></tr>
+<tr><td><code>sip()</code>，对 SIP 中继 / 话机</td><td><code>Sdp</code></td><td><code>None</code></td><td>扩展关掉，<code>Negotiate</code>（许多 SIP 对端不 mux RTCP），<code>Balanced</code></td></tr>
+</tbody>
+</table>
+<p>常见改法：SIP 要 SDES-SRTP，就 <code>sip()</code> 再把 <code>keying = Keying::Sdes</code>；像 Linphone 这种带 ICE 的话机，再把 <code>connectivity = Connectivity::IceLite</code>。<span class="source">出处：README Configuration 段，以及上面两个构造函数的文档注释。</span></p>
+
+<div class="note">本课只建立地图。下次再在仓库根目录跑 <code>datachannel_chat</code>（Windows 11 PowerShell 同样是 <code>cargo run --example datachannel_chat</code>），浏览器打开 <code>http://127.0.0.1:3000</code>。</div>
+
+<h2>4. 回忆题</h2>
+
+<div class="quiz" id="q1" data-ok-text="对。库只生成、解析 SDP，并更新 SignalingState；HTTP 或 SIP 才负责把文本送到对端。" data-bad-text="不对。再看第 1 节：谁把 SDP 送出去？">
+<p class="q">不看上文：rustrtc 会不会把 SDP 送到对端？</p>
+<button data-ok="0">会，库内置信令通道</button>
+<button data-ok="1">不，应用自己去交换</button>
+<button data-ok="0">会，连通完成一并送</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q2" data-ok-text="对。webrtc() 就是 Ice × Dtls，再加上 WebRTC 扩展、强制 rtcp-mux 和 MaxBundle。" data-bad-text="不对。想一想和浏览器互操作需要哪一种选路、哪一种密钥交换。">
+<p class="q">和浏览器建连，应选哪组 Connectivity × Keying？</p>
+<button data-ok="1">全量采集并且握手导出</button>
+<button data-ok="0">地址直连并且明文传送</button>
+<button data-ok="0">精简采集并且属性交换</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q3" data-ok-text="对。Keying 的文档写明：Data channels (SCTP) need Dtls（src/config.rs:167–169）。" data-bad-text="不对。数据通道跑在 SCTP over DTLS 上，密钥方式有硬性要求。">
+<p class="q">DataChannel 要能工作，Keying 必须是哪一种？</p>
+<button data-ok="1">Dtls 握手导出密钥</button>
+<button data-ok="0">Sdes 属性交换密钥</button>
+<button data-ok="0">None 不做密钥交换</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q4" data-ok-text="对。ICE（加 STUN/TURN）只负责找路；加密在 DTLS/SRTP。" data-bad-text="不对。把「找路」和「加密」分开想。">
+<p class="q">哪一层负责打洞选路，不负责加密媒体？</p>
+<button data-ok="1">ICE 层只负责选路打洞</button>
+<button data-ok="0">DTLS 只负责导出密钥</button>
+<button data-ok="0">SRTP 只负责加密媒体</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+<script src="../assets/quiz.js"></script>
+
+<h2>主要阅读</h2>
+<p>仓库里的 <a href="https://github.com/restsend/rustrtc/blob/e13b5f2c97aa2ab44e7e3270c4b5a6a6cf302e88/README.md#configuration">README Configuration @ e13b5f2</a>（约 229–253 行）：先读「没有默认值，从对端种类起步」，再读 Connectivity × Keying 对照表。协议想对照一本，就打开 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-3">RFC 3264 §3</a>。</p>
+
+<p>有任何不清楚的，随时直接问我。</p>
+
+<nav class="next">
+<span></span>
+<a href="0002-ice.html">下一课：0002 ICE 巩固 →</a>
+</nav>
+<footer>核实环境：rustrtc 0.6.4 / rustc 1.100.0 / 提交 e13b5f2 · 2026-11-16</footer>
+</body>
+</html>
