@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 3 课：音频通话里的 ICE</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="course">rustrtc 学习 · 第 3 课 · 0.6.4 / e13b5f2 · <a href="0002-ice.html">第 2 课</a> · <a href="../reference/ice-cheatsheet.html">ICE 速查</a></header>
+
+<h1>音频通话里的 ICE</h1>
+<p class="lede">第 2 课讲的是 ICE 怎么选出一条路。这一课讲路选好以后的事：音频在这条路上怎么走，静音时连接怎么保住，断了怎么恢复，SIP 那边为什么常常不用 ICE。每条结论都对到提交 <code>e13b5f2</code> 的源码，或者刚跑出来的日志。</p>
+
+<h2>1. 先对一下</h2>
+<p>你已经会这些了：四种候选、优先级公式、STUN 检查时 USERNAME 怎么拼、谁 controlling、怎么用 USE-CANDIDATE 提名、srflx 碰上对称 NAT 时要靠 relay 兜底。本课不再重复这些，只往下讲。</p>
+
+<h2>2. 一通音频的真实时间线</h2>
+<p>我在共享电脑上跑了 <code>playground/ice_audio</code>：同一进程里起两个 <code>PeerConnection</code>，各带一条 PCMU 8 kHz 音频，两边对发 20 ms 一帧的包。先通话 3 秒，再静音 4 秒，然后做一次 ICE restart，最后再说 1 秒。下面是 <code>webrtc()</code> 模式的日志摘录，时间已换算成 <strong>2026-11-17 02:29（Asia/Tokyo）</strong>：</p>
+<pre class="output"><code>02:29:21.883360  gather: Gathered local candidate: 172.30.0.2:56952 type=Host        (offerer)
+02:29:21.883716  gathering_loop returning (Complete)                                  → 写 SDP，vanilla
+02:29:21.886660  ICE successful pair (controlled): 172.30.0.2:33651 -&gt; 172.30.0.2:56952
+02:29:21.887699  Controlling agent nominating pair: 172.30.0.2:56952 -&gt; 172.30.0.2:33651
+02:29:21.887907  Nomination succeeded
+02:29:21.887909  ICE nomination completed successfully, starting DTLS
+02:29:21.907962  DTLS handshake complete (server role)   label="answerer"
+02:29:21.908330  setup_srtp: SRTP session ready (is_client=true, profile=Aes128Sha1_80)
+02:29:21.908446  offerer: PeerConnectionState = Connected
+02:29:21.909150  IceConn: first outbound RTP sent        label=offerer
+02:29:21.909244  IceConn: first inbound RTP (194 bytes) from 172.30.0.2:56952
+02:29:22.882120  Sent STUN Response to 172.30.0.2:33651  ← 第一次保活，之后每秒一次
+02:29:22.941159  IceConn: first inbound RTCP (46 bytes) — remote alive</code></pre>
+<p>按阶段算一下：ICE 从采集到提名用了约 4.5 ms，DTLS 握手约 20 ms，DTLS 完成后约 1 ms 发出第一个 RTP。这是本机环回的数字。到了真实网络上，ICE 检查、DTLS 握手这些步骤，每一步都至少要一个往返（RTT）。所以对方接起电话后，最开始那几百毫秒的话会不会被吞掉，主要看 ICE 和 DTLS 加起来要几个 RTT。</p>
+<p class="note">194 字节的 RTP 包里，160 字节是 PCMU 负载，12 字节是 RTP 固定头，还有 SRTP 的认证标签（<code>_80</code> 表示 80 bit，即 10 字节），剩下的是 <code>webrtc()</code> 打开的头扩展。同样的音频在 <code>sip()</code> 模式下只有 172 字节，也就是 12 + 160，下面第 7 节能看到。</p>
+
+<h2>3. 音频为什么特别怕路选得不好</h2>
+<table>
+<thead><tr><th>因素</th><th>对音频的影响</th><th>在 rustrtc 里</th></tr></thead>
+<tbody>
+<tr><td>建连延迟</td><td>第一个 RTP 发出之前，对方说的话全听不到</td><td>vanilla 模式要等采集完才能出 SDP；配了 STUN/TURN 的话，采集时间会被拉长（见第 5 节）</td></tr>
+<tr><td>relay 多绕一跳</td><td>端到端延迟变大。语音延迟超过 150 ms 左右，对话就开始容易互相抢话</td><td><code>nomination_grace</code>（默认 200 ms，<code>src/config.rs:703</code>）。注释说得很明白：宽限期太短，先验证成功的 relay 对就会抢在稍慢的直连对前面被提名（:695–702）</td></tr>
+<tr><td>TURN over TCP / TLS</td><td>TCP 丢一个包就要重传，后面的包都得排队等。对语音来说，迟到的包等于丢了，结果是卡顿加抖动</td><td><code>turn:...?transport=tcp</code>、<code>turns:</code> 都走 TCP（<code>mod.rs:6366、6374</code>）。只在 UDP 完全不通时才用它</td></tr>
+<tr><td>丢包和抖动</td><td>ICE 不管这些。ICE 只保证路是通的，不保证路的质量</td><td>选路只看优先级（第 2 课），不测 RTT 和丢包率</td></tr>
+</tbody>
+</table>
+<p class="note">核查发现：<code>IceServer</code> 的文档写着 <code>turns:host:port</code> 是 TLS（<code>src/config.rs:36</code>），可是 <code>turn.rs</code> 里的 <code>TurnTransport</code>（:652）只有 <code>Udp</code> 和 <code>Tcp</code> 两种，我没找到 TLS 封装。<code>turns:</code> 被解析成 TCP，默认端口是 5349。真要走 TLS 的话，先自己抓包确认一下。</p>
+
+<h2>4. 路选好以后，这条路上跑的是什么</h2>
+<p>ICE 选中的那一对地址（UDP 五元组）上，跑着四种东西：STUN（保活）、DTLS（握手）、SRTP（音频）、SRTCP（音频质量报告）。收到包后按第一个字节分流（RFC 7983 §7）：0–3 是 STUN，20–63 是 DTLS，128–191 是 RTP/RTCP。rustrtc 在 <code>handle_packet</code>（<code>src/transports/ice/mod.rs:3438</code>）里，首字节 <code>&lt; 2</code> 的当 STUN 处理（:3454），其余交给 DTLS/RTP 那条路径。</p>
+<p>为什么只要一个 component：</p>
+<ul>
+<li><strong>rtcp-mux</strong>（RFC 5761）：RTCP 和 RTP 走同一个端口，这样就不需要 component 2。<code>RtcpMuxPolicy</code>（<code>src/config.rs:134</code>）的注释写明：full ICE 不采集 RTCP component，始终按 <code>Require</code> 处理。</li>
+<li><strong>BUNDLE</strong>（RFC 9143）：音频、视频、DataChannel 合用一条传输。<code>BundlePolicy</code>（:117）的注释写明：full ICE 只有一个 ICE agent，始终按 <code>MaxBundle</code> 处理。</li>
+</ul>
+<p>本次 offer 的音频段（真实输出）：</p>
+<pre class="output"><code>a=group:BUNDLE 0
+m=audio 9 UDP/TLS/RTP/SAVPF 0          ← 端口 9 是占位，真实地址都写在 candidate 里
+c=IN IP4 0.0.0.0
+a=ice-ufrag:77df1629e08c901e
+a=ice-pwd:68b498d89465514d814bff9757aa8c70
+a=candidate:42c85eb97134975e 1 udp 2130706431 172.30.0.2 56952 typ host
+a=candidate:2d593ec349bdb740 1 udp 2130706431 172.17.0.1 57541 typ host
+a=fingerprint:sha-256 C0:B7:53:...:BD:4A
+a=setup:actpass
+a=mid:0
+a=end-of-candidates
+a=rtpmap:0 PCMU/8000
+a=rtcp-mux
+a=rtcp-mux-only                        ← 只在第一次 offer 里出现（RFC 8858 §4）</code></pre>
+<p>candidate 里的 component 全是 <code>1</code>。<code>a=rtcp-mux-only</code> 只在首个 offer 里写（<code>src/peer_connection.rs:5919–5929</code>）。后面 ICE restart 时重新发的那份 offer 里就没有这一行了。</p>
+
+<h2>5. Trickle 和 vanilla</h2>
+<table>
+<thead><tr><th></th><th>vanilla（本课 playground）</th><th>Trickle（RFC 8838）</th></tr></thead>
+<tbody>
+<tr><td>SDP 什么时候发</td><td>等采集完成以后再发，SDP 里带上全部候选和 <code>a=end-of-candidates</code></td><td>马上发，SDP 带 <code>a=ice-options:trickle</code>，候选之后一条一条补发</td></tr>
+<tr><td>rustrtc 写法</td><td><code>create_offer</code> → <code>wait_for_gathering_complete</code> → 再 <code>create_offer</code></td><td><code>subscribe_ice_candidates</code>（<code>peer_connection.rs:4289</code>）拿到本地候选，经信令发给对方；对方调 <code>add_ice_candidate</code>（:4293）</td></tr>
+<tr><td>对音频的意义</td><td>采集慢的时候（比如 STUN/TURN 服务器响应慢），首包就跟着晚</td><td>host 候选一出来就能开始检查，首包更早</td></tr>
+<tr><td>典型对端</td><td>SIP INVITE、WHEP，这类都是一次性交换 SDP</td><td>浏览器</td></tr>
+</tbody>
+</table>
+<p>rustrtc 只在采集还没完成时写 <code>a=ice-options:trickle</code>，采集完成后就改写 <code>a=end-of-candidates</code>（<code>peer_connection.rs:5823–5842</code>），注释里说这样是为了不让一次性交换 SDP 的对端一直傻等。<code>add_ice_candidate</code> 只是把候选塞进远端候选列表，然后再跑一轮检查（<code>add_remote_candidate</code>，<code>mod.rs:2104–2109</code>）。</p>
+<p class="note">核查发现：在 e13b5f2 里我只找到了<em>写</em> <code>a=end-of-candidates</code> 的代码，没找到解析对端这一行的代码。也就是说，rustrtc 不会因为收到对端的 end-of-candidates 就提前判定检查结束，判定 Failed 还是靠第 6 节的超时。</p>
+
+<h2>6. 通话中：静音、保活、掉线</h2>
+<p>静音那 4 秒的日志（摘录）：</p>
+<pre class="output"><code>02:29:24.910102  after 3 s talking: offerer rx=142 answerer rx=142
+02:29:24.910165  --- silence: no RTP for 4 s ---
+02:29:25.882512  Sent STUN Response to 172.30.0.2:33651
+02:29:25.883087  Sent STUN Response to 172.30.0.2:56952
+02:29:26.882284  Sent STUN Response to 172.30.0.2:33651
+   …… 每秒一对，一直持续 ……
+02:29:28.910769  after silence: offerer rx=143 answerer rx=143    ← RTP 停了，状态没变
+02:29:28.910852  offerer: selected pair 172.30.0.2:56952 Host -&gt; 172.30.0.2:33651 Host</code></pre>
+<p>源码里是这样实现的：</p>
+<ul>
+<li>ICE runner 里有一个 1 秒的定时器（<code>src/transports/ice/mod.rs:470–471</code>），每次触发都调用 <code>run_keepalive_tick</code>（:1066）。它在选中的那一对上发一个带 USERNAME/PRIORITY、用对端 pwd 签名的 Binding 请求（:1127–1170）。上面日志里的 <code>Sent STUN Response</code> 就是对端在回这个请求。</li>
+<li>收到的任何包都会刷新 <code>last_received_nanos</code>（<code>handle_packet</code>，:3449），不管是 STUN、DTLS、RTP 还是 RTCP。每个 tick 拿它跟阈值比（:1097–1124）：超过 <code>ice_disconnect_threshold</code>（默认 30 s，<code>config.rs:1021</code>）就转 <code>Disconnected</code>；超过 <code>ice_connection_timeout</code>（默认 120 s，:1020）就转 <code>Failed</code>；在 Disconnected 期间又收到包，就回到 <code>Connected</code>。</li>
+<li>PeerConnection 进入 Disconnected 后，会再等 <code>ice_disconnect_grace</code>（默认 60 s，<code>config.rs:1022</code>）才拆掉连接。只有 <code>Failed</code> / <code>Closed</code> 才算彻底失败（<code>is_ice_failed_or_closed</code>，<code>peer_connection.rs:5301</code>）。</li>
+<li>TURN 的 allocation、permission、channel 每 25 s 刷新一次（<code>mod.rs:480</code>），比 300 s 的 permission 寿命和常见 NAT 约 30 s 的空闲超时都短得多。</li>
+</ul>
+<p>RFC 是怎么规定的：</p>
+<ul>
+<li>RFC 8445 §11：只要选中的那一对上 15 s 内没发过包，就得发一次保活，可以是 STUN Binding Indication，也可以是请求。保活一停，NAT 映射就可能过期，静音之后再说话，对方就听不到了。</li>
+<li>RFC 7675（consent freshness）：大约每 5 s 发一次带认证的 Binding 请求，间隔要随机化；30 s 收不到响应就必须停止发送媒体。</li>
+</ul>
+<p class="note">核查发现：rustrtc 每 1 s 发一次保活，比两份 RFC 要求的都勤，所以 NAT 映射在静音时也不会过期。不过它判断对方在不在，看的是“收没收到任何包”，没有专门检查保活请求有没有拿到 STUN 成功响应。保活交易只等 5 s 就清理掉（:1157–1164），结果不参与判定。另外我也没找到 RFC 7675 要求的“失去同意后停止发送媒体”这条逻辑。还有一处文档和代码对不上：<code>ice_connection_timeout</code> 的文档写的是“没有 STUN 响应”（<code>config.rs:704–708</code>），实际代码数的是任何入站包。</p>
+<p>我还另跑了一次验证：把阈值改成 Disconnected 2 s、Failed 6 s，在静音开始时直接关掉 answerer。<code>02:30:50.096</code> answerer 关闭，<code>02:30:53.070</code> offerer 转 Disconnected，<code>02:30:57.070</code> 转 Failed。每次都比阈值晚 1 秒左右，因为状态只在 1 s 一次的 tick 上检查。</p>
+
+<h2>7. ICE restart：换网时怎么恢复</h2>
+<pre class="output"><code>02:29:28.911035  ICE restart: new ufrag=ede6809e27d4b86a, pwd=&lt;redacted&gt;  label="offerer"
+02:29:28.912021  remote ICE restart detected (ufrag/pwd changed): restarting locally  label="answerer"
+02:29:28.912093  ICE restart: new ufrag=30f2ac1b05ee512f  label="answerer"
+02:29:28.912561  ICE restart completing: peer re-signalled credentials  label="offerer"
+02:29:28.913412  Controlling agent nominating pair: 172.30.0.2:56952 -&gt; 172.30.0.2:33651
+02:29:28.913980  Nomination succeeded
+02:29:30.715003  after 1 s more talking: offerer rx 143 -&gt; 191</code></pre>
+<pre><code>pc.restart_ice().await?;           // peer_connection.rs:4307；要求 Connectivity::Ice + Stable
+let offer = pc.create_offer().await?;   // 新 offer 自动带新的 ice-ufrag / ice-pwd
+// …… 照常走 offer/answer。对端看到 ufrag/pwd 变了，就自己也重启</code></pre>
+<ul>
+<li>RFC 8445 §9 的规定：offer 里换一套新的 ufrag/pwd，就表示要重启 ICE，双方重新做检查和提名。</li>
+<li>rustrtc 这边：本端调 <code>IceTransport::restart</code>（<code>mod.rs:1657</code>）；对端变化在 <code>start</code> 里检测（:1769–1795）。两条路径都会走到 <code>restart_internal</code>（:1673）。</li>
+<li><strong>只换凭证</strong>：本地候选和 socket 都保持不动（:1646–1652）。日志里重启后的 offer 用的还是同样的 <code>56952</code> / <code>57541</code> 候选。DTLS/SRTP 也不重做，这次重启后日志里就没有第二次 <code>DTLS handshake complete</code>。</li>
+<li>这意味着：如果手机从 Wi-Fi 切到 4G，本机 IP 真的变了，只调 <code>restart_ice()</code> 不会去采集新网卡上的候选。这种场景要另想办法，比如重建 PeerConnection。这是从注释推出来的结论，我没在真实换网的场景里测过。</li>
+<li>在 <code>sip()</code> 模式下调用，会直接返回错误（真实输出）：<code>restart_ice() in sip mode -&gt; Err(invalid state: restart_ice only applies to full ICE (Connectivity::Ice))</code>。</li>
+</ul>
+
+<h2>8. SIP 音频：经常根本没有 ICE</h2>
+<p>同一个 playground 加上 <code>-- sip</code> 参数，用的就是 <code>RtcConfiguration::sip()</code>（<code>src/config.rs:981</code>）= <code>Connectivity::Sdp</code> + <code>Keying::None</code> + <code>RtcpMuxPolicy::Negotiate</code>。真实 SDP：</p>
+<pre class="output"><code>offer                                   answer
+c=IN IP4 172.30.0.2                     c=IN IP4 172.30.0.2
+m=audio 49651 RTP/AVP 0                 m=audio 48691 RTP/AVP 0
+a=rtpmap:0 PCMU/8000                    a=rtpmap:0 PCMU/8000
+a=rtcp-mux                              a=rtcp-mux
+a=rtcp:49652   ← 预留了 RTCP 端口，给不支持 mux 的对端</code></pre>
+<pre class="output"><code>02:29:30.963991  Gathered local candidate: 172.30.0.2:49651 type=Host   ← RTP
+02:29:30.964029  Gathered local candidate: 172.30.0.2:49652 type=Host   ← RTCP（Negotiate 才有）
+02:29:30.964898  ICE: published selected socket pair_local=172.30.0.2:49651 pair_remote=172.30.0.2:48691
+02:29:30.965283  both PeerConnections Connected
+02:29:30.966117  IceConn: first inbound RTP (172 bytes) from 172.30.0.2:49651
+02:29:32.003237  IceConn: first inbound RTCP (32 bytes) — remote alive
+（整段日志里一条 STUN 都没有；静音 4 秒期间什么包都不发）</code></pre>
+<p>这里没有 ufrag、candidate，也没有检查。“选中的那一对”直接取自对端 SDP 里的 c= 地址和 m= 端口，从 SDP 到第一个 RTP 只用了约 2 ms。代价是：对端如果在 NAT 后面，SDP 里写的是它的内网地址，你的包就发丢了。</p>
+<table>
+<thead><tr><th><code>Connectivity</code>（<code>config.rs:149</code>）</th><th>怎么找路</th><th>典型对端</th></tr></thead>
+<tbody>
+<tr><td><code>Sdp</code></td><td>用 SDP 里的 c=/m= 地址。可选打开 latching：按实际收到包的源地址回发（对称 RTP）</td><td>运营商 SIP trunk、话机、PBX</td></tr>
+<tr><td><code>IceLite</code></td><td>RFC 8445 §2.5：自己不发起检查，只回应对方的检查，跟着对方的提名走</td><td>有公网 IP 的媒体服务器，对接浏览器或 full ICE 的 SIP 客户端</td></tr>
+<tr><td><code>Ice</code></td><td>full ICE：采集、检查、提名</td><td>浏览器，两端都在 NAT 后面</td></tr>
+</tbody>
+</table>
+<ul>
+<li><strong>latching</strong>：<code>enable_latching</code>（<code>config.rs:806</code>，默认 <code>false</code>），只对 <code>Sdp</code> / <code>IceLite</code> 生效。打开后，收到的 RTP 要满足“同一个 SSRC、连续的序号”才会切换回发地址，一个包不算数（README「RTP Latching」，<code>peer_connection.rs:2976–2984</code>）。</li>
+<li><strong>ICE-lite 的 SDP</strong>：会话级多一行 <code>a=ice-lite</code>，m= 段里照样带 ufrag/pwd/candidate（<code>peer_connection.rs:5883–5913</code>）。对端是 lite 时，full 的一方无论是 offerer 还是 answerer，都必须当 controlling（<code>:2033–2041</code>，RFC 8445 §6.1.1）。要是对端也以 controlled 身份来检查，rustrtc 的 lite 一方会回 <code>487 Role Conflict</code>（<code>mod.rs:3687</code>），逼它切成 controlling。</li>
+<li><strong>没有 STUN 保活</strong>：对端没给 ICE 参数时，<code>run_keepalive_tick</code> 什么都不发（<code>mod.rs:1171–1179</code>），因为 STUN 包会混进对方的 RTP 流里，被当成坏包。注释也承认：静音期间本端 NAT 映射的保活（RFC 6263）没有覆盖。RTCP 大约每秒一次，算是顺带保活。</li>
+</ul>
+<p>和浏览器比：浏览器的音频永远是 full ICE + DTLS-SRTP + rtcp-mux + BUNDLE。也就是说，rustrtc 对接浏览器时只能用 <code>webrtc()</code>，至多把自己设成 <code>IceLite</code>，而对接 SIP 时要按对端的能力来选。</p>
+
+<h2>9. TURN：给音频兜底</h2>
+<pre><code>use rustrtc::{RtcConfiguration, IceServer, IceTransportPolicy};
+let mut c = RtcConfiguration::webrtc();
+c.ice_servers = vec![
+    IceServer::new(vec!["stun:stun.example.org:3478".to_string()]),
+    IceServer::new(vec!["turn:turn.example.org:3478?transport=udp".to_string()])
+        .with_credential("user", "secret"),          // config.rs:50、:60
+];
+// 只想测 relay 能不能通：
+c.ice_transport_policy = IceTransportPolicy::Relay;  // config.rs:85、:609</code></pre>
+<p>采集时 <code>gather_servers</code>（<code>mod.rs:6022</code>）对 <code>turn:</code> 调 <code>probe_turn</code>（:6197）→ <code>TurnClient::allocate</code>（<code>turn.rs:147</code>），得到 <code>typ relay</code> 候选（type preference 0）。给音频的建议：优先 <code>turn:...?transport=udp</code>，TCP 只当 UDP 被封时的最后手段（见第 3 节）；TURN 服务器尽量部署在离用户近的地方，因为它多出来的那一跳，延迟每个包都要付。<span class="source"><a href="https://www.rfc-editor.org/rfc/rfc8656.html#section-3">RFC 8656 §3</a>。</span></p>
+
+<h2>10. “没声音”排查表</h2>
+<table>
+<thead><tr><th>症状</th><th>先看哪一行日志</th><th>多半是</th></tr></thead>
+<tbody>
+<tr><td>一直停在 <code>Checking</code>，最后 <code>Failed</code></td><td>没有 <code>ICE successful pair</code></td><td>候选不可达：只有内网 host，没配 STUN/TURN；或者防火墙封了 UDP。去看对方 SDP 里的 <code>a=candidate</code></td></tr>
+<tr><td>有 <code>Nomination succeeded</code>，没有 <code>DTLS handshake complete</code></td><td>DTLS 相关</td><td>指纹对不上、<code>a=setup</code> 角色冲突；或者路能过 STUN，但过不了大一点的 DTLS 包</td></tr>
+<tr><td>有 <code>SRTP session ready</code>，没有 <code>first inbound RTP</code></td><td>RTP 相关</td><td>对方没发；方向是 <code>sendonly</code>/<code>recvonly</code>；payload type 没协商上</td></tr>
+<tr><td>单向有声（只有一边收到 RTP）</td><td><code>first inbound RTP</code> 只在一边出现</td><td>SIP 模式下，对方 SDP 写的是内网地址（试试 <code>enable_latching</code>）；或者 NAT 只放行了一个方向</td></tr>
+<tr><td>静音一会儿之后，再说话对方听不到</td><td>静音期间有没有 STUN 或 RTCP</td><td>NAT 映射过期了。full ICE 有 1 s 保活；SIP 纯 RTP 只靠 RTCP，没有 RTCP 就会出事</td></tr>
+<tr><td>通话中途掉到 <code>Disconnected</code></td><td>状态变化的时间点</td><td>30 s 收不到任何包。网络断了、对端挂了、换网了（看第 7 节的限制）</td></tr>
+<tr><td>接通后延迟大、断断续续</td><td><code>selected pair</code> 里的 <code>Relay</code> 类型、<code>tcp</code></td><td>走了 TURN，或者 TURN-TCP。确认直连为什么没成功，考虑调大 <code>nomination_grace</code></td></tr>
+</tbody>
+</table>
+
+<h2>11. 自己跑</h2>
+<span class="label">共享 Linux 电脑（已跑过，日志在 playground/ice_audio/logs/）</span>
+<pre><code>cd /workspace/teaching/rustrtc/playground/ice_audio
+RUST_LOG="rustrtc=debug,rustrtc::transports::ice=trace,ice_audio=info" cargo run
+RUST_LOG="rustrtc=debug,rustrtc::transports::ice=trace,ice_audio=info" cargo run -- sip</code></pre>
+<span class="label">Windows 11 PowerShell（可选，要先 clone 两个仓库）</span>
+<pre><code>git clone https://github.com/restsend/rustrtc
+git -C rustrtc checkout e13b5f2
+git clone https://github.com/penanegrarenea-ship-it/rustrtc-learning
+cd rustrtc-learning\playground\ice_audio
+# 把 Cargo.toml 里 rustrtc 的 path 改成 "../../../rustrtc"
+$env:RUST_LOG="rustrtc=debug,rustrtc::transports::ice=trace,ice_audio=info"
+cargo run
+cargo run -- sip</code></pre>
+<p>你那边应该能看到的证明行：<code>Nomination succeeded</code>、<code>DTLS handshake complete</code>、<code>first inbound RTP (194 bytes)</code>、静音期间每秒一次的 <code>Sent STUN Response</code>，还有 <code>ICE restart: new ufrag=</code>。地址会不一样。<code>sip</code> 模式下整段日志一条 STUN 都没有，RTP 包是 172 字节。</p>
+
+<div class="task">
+<p><strong>动手练习：预测掉线时间</strong></p>
+<p>改 <code>src/main.rs</code>：在建 PeerConnection 的闭包里加上 <code>c.ice_disconnect_threshold = Duration::from_secs(2);</code> 和 <code>c.ice_connection_timeout = Duration::from_secs(6);</code>；在 <code>--- silence</code> 那一行之后调用 <code>b.close();</code>，再 sleep 8 秒后退出。</p>
+<p><strong>先写下预测</strong>：answerer 关闭之后，大约过几秒 offerer 会变成 <code>Disconnected</code>？几秒变成 <code>Failed</code>？为什么不正好是 2 秒和 6 秒？然后再运行。</p>
+<details><summary>我跑出来的结果</summary>
+<p>02:30:50.096 answerer 关闭 → 02:30:53.070 Disconnected（约 3 s）→ 02:30:57.070 Failed（约 7 s）。之所以多出大约 1 秒，是因为阈值只在 1 s 一次的 keepalive tick 上检查（<code>mod.rs:470–471</code>、<code>:1097–1124</code>），而且计时起点是最后一次收到包的时刻，不是调用 close 的时刻。</p>
+</details>
+</div>
+
+<h2>12. 回忆题</h2>
+
+<div class="quiz" id="q1" data-ok-text="对。runner 每 1 s 在选中的那一对上发一次 Binding（mod.rs:470、1127–1170），对端的响应会刷新 last_received（:3449），所以 30 s 的 Disconnected 阈值碰不到。" data-bad-text="不对。去看静音那段日志里每秒出现的是哪一行。">
+<p class="q">webrtc() 模式下静音 4 秒，RTP 一个都没发，ICE 为什么还是 Connected？</p>
+<button data-ok="0">RTP 停发时计时器也跟着暂停</button>
+<button data-ok="1">每秒一次 STUN 保活仍在收发</button>
+<button data-ok="0">DTLS 会每秒重新握手保持状态</button>
+<button data-ok="0">静音时 SRTP 自动补发空白包</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q2" data-ok-text="对。Connectivity::Sdp 没有 ICE agent，媒体地址直接取 c= 和 m= 的端口（config.rs:149–152）。对端在 NAT 后面时，这个地址可能是错的，可以靠 latching 纠正。" data-bad-text="不对。sip() 的 SDP 里根本没有 candidate 和 ufrag。">
+<p class="q">sip() 模式（Connectivity::Sdp）下，RTP 发到哪里由什么决定？</p>
+<button data-ok="0">a=candidate 中优先级最高那条</button>
+<button data-ok="0">STUN 检查成功后提名的那一对</button>
+<button data-ok="1">对端 SDP 的 c= 地址和 m= 端口</button>
+<button data-ok="0">TURN 服务器分配给你的中继地址</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q3" data-ok-text="对。restart 只换凭证（mod.rs:1646–1652）：候选、socket、DTLS/SRTP 都不动。日志里重启后的 offer 还是同样的候选端口，也没有第二次 DTLS 握手。" data-bad-text="不对。去看重启后那份 offer 里的候选端口，和日志里有没有第二次 DTLS 握手。">
+<p class="q">rustrtc 的 restart_ice() 之后，下面哪件事会发生？</p>
+<button data-ok="1">换新 ufrag/pwd 并重新检查提名</button>
+<button data-ok="0">重新采集网卡并生成新的候选</button>
+<button data-ok="0">重新做 DTLS 握手更新 SRTP 密钥</button>
+<button data-ok="0">sip 模式下自动改走 ICE 再重连</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q4" data-ok-text="对。rtcp-mux 让 RTCP 和 RTP 共用端口；BUNDLE 让所有 m= 共用一条传输。所以 candidate 里只有 component 1（RtcpMuxPolicy / BundlePolicy 注释，config.rs:117、134）。" data-bad-text="不对。去看 offer 里每条 a=candidate 的第二个字段。">
+<p class="q">webrtc() 的一路音频（rtcp-mux + BUNDLE）需要几个 ICE component？</p>
+<button data-ok="1">一个，RTP 和 RTCP 共用端口</button>
+<button data-ok="0">两个，RTP 和 RTCP 各占端口</button>
+<button data-ok="0">三个，再加 DTLS 单独的端口</button>
+<button data-ok="0">四个，音频视频各自两个端口</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+
+<div class="quiz" id="q5" data-ok-text="对。ICE 已经提名，说明路是通的；卡在 DTLS，就去查指纹、a=setup 角色，或者大包过不去。SRTP 密钥要靠 DTLS 导出，所以 RTP 也不会出现。" data-bad-text="不对。按日志顺序走一遍：ICE → DTLS → SRTP → RTP，最后一个出现的是哪一行？">
+<p class="q">日志里有 Nomination succeeded，却始终没有 DTLS handshake complete，最该先查什么？</p>
+<button data-ok="0">候选是否可达和防火墙 UDP 端口</button>
+<button data-ok="1">指纹和 a=setup 角色是否匹配</button>
+<button data-ok="0">payload type 和编解码是否一致</button>
+<button data-ok="0">TURN 账号密码以及服务器地址</button>
+<p class="fb" aria-live="polite"></p>
+</div>
+<script src="../assets/quiz.js"></script>
+
+<h2>主要阅读</h2>
+<p><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-9">RFC 8445 §9</a>（restart）和 <a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-11">§11</a>（keepalive），再读 <a href="https://www.rfc-editor.org/rfc/rfc7675.html#section-5.1">RFC 7675 §5.1</a>（consent freshness），然后对照 <code>run_keepalive_tick</code>（<code>src/transports/ice/mod.rs:1066</code>）看 rustrtc 做到了哪些、没做哪些。其他会用到的：<a href="https://www.rfc-editor.org/rfc/rfc8838.html">RFC 8838</a>（Trickle）、<a href="https://www.rfc-editor.org/rfc/rfc5761.html">RFC 5761</a>（rtcp-mux）、<a href="https://www.rfc-editor.org/rfc/rfc9143.html">RFC 9143</a>（BUNDLE）、<a href="https://www.rfc-editor.org/rfc/rfc7983.html#section-7">RFC 7983 §7</a>（分流）、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">RFC 8445 §2.5</a>（ICE-lite）。速查见 <a href="../reference/ice-cheatsheet.html#audio">ICE 速查 · 音频</a>。</p>
+
+<p>有任何不清楚的，随时直接问我。</p>
+
+<nav class="next">
+<span><a href="0002-ice.html">第 2 课：巩固 ICE</a></span>
+<span></span>
+</nav>
+<footer>核实环境：rustrtc 0.6.4 / rustc 1.100.0 / 提交 e13b5f2 · 日志采于 2026-11-17 02:29–02:30（Asia/Tokyo）</footer>
+</body>
+</html>

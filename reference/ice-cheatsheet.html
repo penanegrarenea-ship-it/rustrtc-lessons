@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
-<header class="course">rustrtc 学习 · 参考 · 0.6.4 / e13b5f2 · <a href="../lessons/0002-ice.html">第 2 课</a> · <a href="types.html">核心类型</a></header>
+<header class="course">rustrtc 学习 · 参考 · 0.6.4 / e13b5f2 · <a href="../lessons/0002-ice.html">第 2 课</a> · <a href="../lessons/0003-ice-audio.html">第 3 课</a> · <a href="types.html">核心类型</a></header>
 
 <h1>ICE 速查</h1>
 <p class="lede">候选类型、优先级、检查时序，以及 rustrtc 在提交 <code>e13b5f2</code> 里的对应位置。第 2 课用过就回来查。</p>
@@ -100,6 +100,25 @@ pair_priority = 2^32 * min(G, D) + 2 * max(G, D) + (G &gt; D ? 1 : 0)</code></pr
 <li>Trickle：收集未完成时 SDP 带 <code>a=ice-options:trickle</code>，用 <code>add_ice_candidate</code> 继续喂；收集完成则写 <code>a=end-of-candidates</code>，不再声明 trickle。</li>
 </ul>
 
-<footer>核实环境：rustrtc 0.6.4 / 提交 e13b5f2 · 2026-11-16</footer>
+<h2 id="audio">音频通话（第 3 课）</h2>
+<table class="types">
+<thead><tr><th>话题</th><th>rustrtc @ e13b5f2</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td>保活</td><td>1 s 定时器 <code>mod.rs:470–471</code>；<code>run_keepalive_tick</code> :1066</td><td>每秒在选中对上发 Binding；静音也照发</td></tr>
+<tr><td>掉线判定</td><td><code>mod.rs:1097–1124</code>；<code>last_received_nanos</code> 在 <code>handle_packet</code> :3449 刷新</td><td>任何入站包都算活着。30 s → Disconnected，120 s → Failed（<code>config.rs:1020–1021</code>），PC 再宽限 60 s（:1022）</td></tr>
+<tr><td>consent（RFC 7675）</td><td>未见专门实现</td><td>不按“30 s 无同意即停发”处理</td></tr>
+<tr><td>ICE restart</td><td><code>PeerConnection::restart_ice</code> <code>peer_connection.rs:4307</code>；<code>IceTransport::restart</code> <code>mod.rs:1657</code>；对端检测 :1769–1795</td><td>只换 ufrag/pwd，候选和 DTLS/SRTP 不变；要求 <code>Ice</code> + <code>Stable</code></td></tr>
+<tr><td>Trickle</td><td>写 SDP <code>peer_connection.rs:5823–5842</code>；<code>subscribe_ice_candidates</code> :4289；<code>add_ice_candidate</code> :4293</td><td>采集未完成写 <code>ice-options:trickle</code>，完成写 <code>end-of-candidates</code>；不解析对端的 end-of-candidates</td></tr>
+<tr><td>rtcp-mux / BUNDLE</td><td><code>RtcpMuxPolicy</code> <code>config.rs:134</code>；<code>BundlePolicy</code> :117；SDP :5919–5929</td><td>full ICE 总是 Require + MaxBundle：只有 component 1；<code>rtcp-mux-only</code> 只在首个 offer</td></tr>
+<tr><td>分流</td><td><code>handle_packet</code> <code>mod.rs:3438</code>、:3454</td><td>首字节 &lt; 2 → STUN，其余 DTLS/RTP（RFC 7983 §7）</td></tr>
+<tr><td>ICE-lite</td><td>SDP <code>peer_connection.rs:5883–5913</code>；角色 :2033–2041；487 <code>mod.rs:3687</code></td><td>full 一方对 lite 永远 controlling</td></tr>
+<tr><td>无 ICE（SIP）</td><td><code>Connectivity::Sdp</code> <code>config.rs:149</code>；无 STUN 保活 <code>mod.rs:1171–1179</code></td><td>用 c=/m=；<code>enable_latching</code>（:806，默认 false）纠正 NAT 后地址</td></tr>
+<tr><td>TURN</td><td><code>TurnClient::allocate</code> <code>turn.rs:147</code>；<code>TurnTransport</code> :652；刷新 25 s <code>mod.rs:480</code></td><td><code>turns:</code> 解析为 TCP/5349（:6366、6374），未见 TLS 封装；音频优先 UDP</td></tr>
+</tbody>
+</table>
+<p>日志顺序（成功的一通）：<code>Gathered local candidate</code> → <code>ICE successful pair</code> → <code>Nomination succeeded</code> → <code>DTLS handshake complete</code> → <code>SRTP session ready</code> → <code>first inbound RTP</code> → 每秒 <code>Sent STUN Response</code>（trace）。缺哪一行，就从那一层查。</p>
+<p class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-9">RFC 8445 §9</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-11">§11</a>、<a href="https://www.rfc-editor.org/rfc/rfc7675.html">RFC 7675</a>、<a href="https://www.rfc-editor.org/rfc/rfc8838.html">RFC 8838</a>、<a href="https://www.rfc-editor.org/rfc/rfc5761.html">RFC 5761</a>、<a href="https://www.rfc-editor.org/rfc/rfc9143.html">RFC 9143</a>。</p>
+
+<footer>核实环境：rustrtc 0.6.4 / 提交 e13b5f2 · 2026-11-16（音频节 2026-11-17）</footer>
 </body>
 </html>
