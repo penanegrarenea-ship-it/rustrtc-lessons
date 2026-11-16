@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE 速查 · rustrtc</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="course">rustrtc 学习 · 参考 · 0.6.4 / e13b5f2 · <a href="../lessons/0002-ice.html">第 2 课</a> · <a href="types.html">核心类型</a></header>
+
+<h1>ICE 速查</h1>
+<p class="lede">候选类型、优先级、检查时序，以及 rustrtc 在提交 <code>e13b5f2</code> 里的对应位置。第 2 课用过就回来查。</p>
+
+<h2>候选类型</h2>
+<table>
+<thead><tr><th>类型</th><th>SDP</th><th>type pref</th><th>怎么来的</th><th>源码 @ e13b5f2</th></tr></thead>
+<tbody>
+<tr><td>Host</td><td><code>typ host</code></td><td>126</td><td>绑本地网卡</td><td><code>IceCandidate::host</code> <code>mod.rs:4769</code>；<code>gather_host_candidates</code> :5749</td></tr>
+<tr><td>PeerReflexive</td><td><code>typ prflx</code></td><td>110</td><td>检查中发现</td><td>发现日志 :3750</td></tr>
+<tr><td>ServerReflexive</td><td><code>typ srflx</code></td><td>100</td><td>STUN Binding 的 XOR-MAPPED-ADDRESS</td><td><code>server_reflexive</code> :4828；<code>probe_stun</code> :6138</td></tr>
+<tr><td>Relay</td><td><code>typ relay</code></td><td>0</td><td>TURN Allocate</td><td><code>relay</code> :4842；<code>probe_turn</code> :6197；<code>TurnClient::allocate</code> <code>turn.rs:147</code></td></tr>
+</tbody>
+</table>
+<p>枚举 <code>IceCandidateType</code>（<code>mod.rs:4988</code>）。结构体 <code>IceCandidate</code>（:4717）：<code>foundation</code>、<code>priority</code>、<code>address</code>、<code>typ</code>、<code>transport</code>、<code>related_address</code>、<code>component</code>。SDP 读写：<code>to_sdp</code> :4889，<code>from_sdp</code> :4919。</p>
+<p class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.1">RFC 8445 §5.1.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.2.2">§5.1.2.2</a>。</p>
+
+<h2>优先级</h2>
+<pre><code>// 单个候选（priority_for，mod.rs:4856）
+priority = (type_pref &lt;&lt; 24) | (local_pref &lt;&lt; 8) | (256 - component)
+// UDP 的 local_pref = 65535；host + component 1 = 2130706431
+
+// 候选对（IceCandidatePair::priority，mod.rs:5022）
+// G = controlling 端候选优先级，D = controlled 端
+pair_priority = 2^32 * min(G, D) + 2 * max(G, D) + (G &gt; D ? 1 : 0)</code></pre>
+<p class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.2.1">RFC 8445 §5.1.2.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.2.3">§6.1.2.3</a>。</p>
+
+<h2>检查流程时序</h2>
+<pre class="ladder"><code>应用交换 SDP（栈外）
+  offer 带 a=ice-ufrag / a=ice-pwd / a=candidate
+  收集未完成时还可带 a=ice-options:trickle，后续 add_ice_candidate
+  收集完成后改为 a=end-of-candidates（vanilla）
+
+各端采集本地候选
+  start_gathering → gather_host_candidates
+  若配了 ice_servers：probe_stun（srflx）、probe_turn（relay）
+
+角色
+  发 offer 的一方：Controlling（create_offer 里 set_role）
+  答 answer 的一方：Controlled（对端是 ICE-lite 时除外）
+
+配成 IceCandidatePair，两边都发 STUN Binding
+  USERNAME = 远端ufrag:本地ufrag
+  MESSAGE-INTEGRITY 用远端 pwd
+  controlling 带 ICE-CONTROLLING；controlled 带 ICE-CONTROLLED
+
+有效列表
+  检查成功 → ICE successful pair
+  controlled 可先占一条临时路，然后等 USE-CANDIDATE
+
+提名（controlling，nomination_grace 之后）
+  nominate_best_pair：再发一条带 USE-CANDIDATE 的 Binding
+  controlled 跟随；必要时切换已选路径
+  commit_selected_pair 发布选中的那一对
+
+之后才是 DTLS / SRTP / SCTP，不在本表。</code></pre>
+<p class="source"><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.4">RFC 8445 §6.1.4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7">§7</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-8">§8</a>。</p>
+
+<h2>rustrtc 对应位置</h2>
+<table class="types">
+<thead><tr><th>类型 / 函数</th><th>位置 @ e13b5f2</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td><code>RtcConfiguration::ice_servers</code></td><td><code>src/config.rs:606</code></td><td>STUN/TURN 列表；默认空。结构体从 :602 起</td></tr>
+<tr><td><code>IceServer</code></td><td><code>src/config.rs:34</code></td><td><code>urls</code> / <code>username</code> / <code>credential</code></td></tr>
+<tr><td><code>IceTransportPolicy</code></td><td><code>src/config.rs:85</code></td><td><code>All</code> 或强制 <code>Relay</code></td></tr>
+<tr><td><code>nomination_grace</code> / <code>nomination_timeout</code></td><td><code>src/config.rs:703</code> / :694</td><td>默认 200 ms / 10 s</td></tr>
+<tr><td><code>IceTransport</code></td><td><code>src/transports/ice/mod.rs:290</code></td><td>ICE 代理</td></tr>
+<tr><td><code>IceTransport::start_gathering</code></td><td>:1754</td><td>开始采集</td></tr>
+<tr><td><code>IceTransport::start</code></td><td>:1768</td><td>写入远端凭证，必要时开检查</td></tr>
+<tr><td><code>IceTransport::add_remote_candidate</code></td><td>:2104</td><td>Trickle 入口；PC 侧是 <code>add_ice_candidate</code>（<code>peer_connection.rs:4293</code>）</td></tr>
+<tr><td><code>IceTransport::set_role</code> / <code>get_selected_pair</code></td><td>:2100 / :2133</td><td>角色与选中对</td></tr>
+<tr><td><code>IceRole</code></td><td>:4684</td><td><code>Controlling</code> / <code>Controlled</code></td></tr>
+<tr><td><code>IceParameters</code></td><td>:5034；<code>generate</code> :5051</td><td>ufrag / pwd / tie_breaker</td></tr>
+<tr><td><code>IceCandidatePair</code></td><td>:5007</td><td><code>local</code> / <code>remote</code> / <code>nominated</code></td></tr>
+<tr><td><code>perform_connectivity_checks_async</code></td><td>:2227</td><td>组对并开检查</td></tr>
+<tr><td><code>perform_binding_check</code></td><td>:4106</td><td>发 Binding；<code>nominated=true</code> 时加 USE-CANDIDATE</td></tr>
+<tr><td><code>nominate_best_pair</code></td><td>:2711</td><td>controlling 提名</td></tr>
+<tr><td><code>commit_selected_pair</code></td><td>:2687</td><td>发布选中对</td></tr>
+<tr><td><code>StunMessage::binding_request</code></td><td><code>stun.rs:22</code></td><td>成功响应对 :35；<code>UseCandidate</code> :103</td></tr>
+<tr><td><code>TurnClient::allocate</code></td><td><code>turn.rs:147</code></td><td>申请中继地址</td></tr>
+<tr><td>SDP 写入 <code>ice-ufrag</code> / <code>ice-pwd</code></td><td><code>peer_connection.rs:5819–5841</code></td><td>凭证来自 :5623</td></tr>
+<tr><td>角色设定</td><td><code>peer_connection.rs:1538–1541</code>、<code>:1574–1585</code></td><td>offer → Controlling；answer → Controlled</td></tr>
+</tbody>
+</table>
+
+<h2>配置备忘</h2>
+<ul>
+<li><code>webrtc()</code> 默认 <code>connectivity = Ice</code>、<code>ice_servers = []</code>（<code>src/config.rs:967、999</code>）。要 srflx / relay，自己填服务器。</li>
+<li><code>ice_include_loopback_candidates</code> 默认 <code>false</code>（:793）。只有 127.0.0.1 的机器，打开它或设 <code>bind_ips</code>。</li>
+<li>Trickle：收集未完成时 SDP 带 <code>a=ice-options:trickle</code>，用 <code>add_ice_candidate</code> 继续喂；收集完成则写 <code>a=end-of-candidates</code>，不再声明 trickle。</li>
+</ul>
+
+<footer>核实环境：rustrtc 0.6.4 / 提交 e13b5f2 · 2026-11-16</footer>
+</body>
+</html>
