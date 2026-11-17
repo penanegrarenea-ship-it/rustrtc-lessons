@@ -1,0 +1,51 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第 5 课：音频传输的分工</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 5 课 · 协议基础 · <a href="0004-audio-sdp.html">上一课</a></header>
+<h1>音频传输的分工：ICE、RTP、抖动缓冲区与 RTCP</h1>
+<pre><code>ICE 先选路径
+发送端：编码音频 → 装入 RTP → 沿选定路径发送
+接收端：收到 RTP → 抖动缓冲区有限等候、整理顺序 → 解码与播放
+接收端：用 RTCP 报告接收质量 → 发送端</code></pre>
+<p>这是一份已学内容的整理。浏览器用 SRTP 保护音频包，下面讲的是保护前后仍然需要的 RTP 逻辑。不需要 clone 项目或运行代码。</p>
+<h2>1. ICE 选路径，RTP 运送音频</h2>
+<p>ICE 检查候选并提名，选定本地与对端组成的候选对。RTP 沿选定路径运送编码后的音频，不负责重新选路，也不保证每个包都按时到达。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-8.1.1">RFC 8445 §8.1.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-12.1">§12.1</a></p>
+<p><strong>下面的 SDP、包头数值和时序均为虚构示意，不是真实抓包。</strong> SDP 片段省略了其他必要字段：</p>
+<pre><code>a=rtpmap:111 opus/48000/2
+a=rtcp-mux</code></pre>
+<p>按这份 SDP，RTP 包头 <code>PT=111</code> 对应 Opus。<code>111</code> 是本次映射里的 payload type，不是端口，也不是 Opus 永久固定的编号。接收端根据该 RTP 会话协商的映射解释 PT。<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-6.6">RFC 8866 §6.6</a></p>
+<h2>2. 序号看包的顺序，时间戳看音频时间轴</h2>
+<pre><code>同一 SSRC，每包承载 20 ms 音频：
+sequence number    timestamp
+100                10000
+101                10960
+102                11920</code></pre>
+<ul><li><code>sequence number</code> 是 RTP 序号。每发送一个 RTP 数据包增加 1，用于跟踪顺序与缺口。</li><li><code>timestamp</code> 表示音频采样时间轴上的位置，不是网络到达时间。接收端不能按到包速度忽快忽慢地播放。</li><li>Opus 的 <code>48000</code> 是 RTP 时间戳时钟率，即每秒 48000 个时间戳单位。它不是每秒包数、字节数或码率。</li><li>连续音频每包 20 ms 时，时间戳通常增加 <code>48000 × 0.020 = 960</code>。每包 10 ms 时增加 <code>480</code>。</li></ul>
+<p>Opus 在 SDP 中按规范写 <code>opus/48000/2</code>。<code>/2</code> 不证明当前实际发送立体声，单声道也使用这个映射。<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-7">RFC 7587 §7</a></p>
+<h2>3. 抖动缓冲区只能等一段时间</h2>
+<pre><code>同一来源的到达顺序：100 → 102 → 101
+如果 101 赶上播放期限：缓冲后按 100 → 101 → 102 播放
+如果 101 错过播放期限：通常丢弃这个晚到包</code></pre>
+<p>刚收到 <code>100</code>、接着收到 <code>102</code>，只能发现序号缺口。<code>101</code> 可能晚到，不能立刻断言它永远丢失。</p>
+<p>抖动缓冲区暂存音频包，留出有限时间等待和整理乱序包，再按播放时间取出。晚到超过期限的包通常不再播放。解码器可用丢包掩盖等机制补偿缺失，但不能保证还原原来的声音。<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-3.3">RFC 7587 §3.3</a></p>
+<p>等待更久，能容忍更多到达时间变化，但会增加通话延迟。其他条件相同时，把等待从 50 ms 调到 500 ms，会让对方更晚听到声音。它与“包错过既定播放期限”是两件事。<a href="https://www.rfc-editor.org/rfc/rfc7005.html#section-3">RFC 7005 §3</a></p>
+<h2>4. RTCP 报告接收质量，不代替缓冲区</h2>
+<p>RTCP 的接收报告块反馈接收情况，包括丢包比例、累计丢包数和到达间隔抖动。发送端据此了解传输质量。<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4">RFC 3550 §6.4</a></p>
+<pre><code>RTP：这些包里的音频是什么？
+抖动缓冲区：哪些包先等一会儿，什么时候取出来播放？
+RTCP：最近接收情况怎样？</code></pre>
+<p>RTCP 接收报告不直接承载音频，不替接收端排序，也不会自动重传丢包。报告里的 jitter 是到达间隔变化的估计，不是抖动缓冲区的容量。报告的丢包统计和“赶不上播放期限”的包数也不一定相同。</p>
+<h2>5. rtcp-mux 共用端口和 ICE 组件路径</h2>
+<p>双方协商启用 <code>a=rtcp-mux</code> 后，RTP 和 RTCP 使用同一个端口。它们仍是不同报文，由接收端区分，不是合成一个包。<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.1">RFC 5761 §5.1.1</a></p>
+<pre><code>a=candidate:1 1 UDP 2130706431 192.168.1.10 5000 typ host
+a=candidate:2 1 UDP 2130706431 192.168.1.11 6000 typ host</code></pre>
+<p>紧跟 foundation 的数字是组件编号。两行里的组件编号都是 <code>1</code>，所以是同一组件的两个候选，不是一行专供 RTP、另一行专供 RTCP。</p>
+<p>启用复用后，组件 <code>1</code> 的选定候选对承载 RTP 和 RTCP。路径中断可能同时影响音频和质量报告。不复用且分别传输时，RTP 使用组件 <code>1</code>，RTCP 使用组件 <code>2</code>。只看到组件 <code>1</code> 本身不能证明已协商复用，仍需结合 SDP。<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.3">RFC 5761 §5.1.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.1.1">RFC 8445 §5.1.1.1</a></p>
+<h2>6. PT 看编码映射，SSRC 看来源</h2>
+<pre><code>同一个 RTP 会话，使用上面的 PT 映射：
+来源甲：PT=111，SSRC=1234，序号 100、101、102
+来源乙：PT=111，SSRC=5678，序号 800、801、802</code></pre>
+<p>两个来源都可使用 PT 111，但不能因此认定它们是同一来源。SSRC 是同步源标识符，不是端口或编码编号。</p>
+<p>每个 SSRC 有独立的序号和时间戳空间。收到 <code>SSRC=1234, seq=100</code> 后又收到 <code>SSRC=5678, seq=800</code>，不能跨来源相减并声称中间丢了 699 个包。SSRC 的解释范围是 RTP 会话，不是全球唯一的用户身份。<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a></p>
+<h2>合上笔记再回答</h2>
+<p>同一来源的包按 <code>100、102、101</code> 到达。谁选路径，谁运音频，谁有限等候并整理顺序，谁反馈接收质量？如果改成两个不同 SSRC，能把它们的序号连起来计算丢包吗？</p>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>，先看 sequence number、timestamp、SSRC 三个字段。上一课是<a href="0004-audio-sdp.html">读音频 SDP</a>，基础回顾见<a href="../reference/ice-flow.html">ICE 流程笔记</a>。不清楚的点可以继续逐个问。</p>
+<nav class="next"><a href="0004-audio-sdp.html">第 4 课：读音频 SDP</a><a href="../reference/ice-flow.html">ICE 基础流程</a></nav><footer>2026-11-17（Asia/Tokyo）· 协议学习笔记。数值均为示意，非抓包。本课无代码运行。</footer></body></html>

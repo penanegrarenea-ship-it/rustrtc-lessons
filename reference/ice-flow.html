@@ -1,0 +1,92 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ICE 基础流程：从候选到选路</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 基础流程参考 · <a href="../index.html">课程首页</a> · <a href="ice-cheatsheet.html">ICE 速查</a></header>
+<h1>ICE 基础流程：从候选到选路</h1>
+<p><strong>一句话：先找可能的地址，再实际发包检查，最后统一选一条路。</strong> ICE 不负责传递信令，也不加密音频。这是基础流程笔记，不是高级调参课。</p>
+<pre><code>收集候选 → 经应用信令交换 → 候选配对 → STUN 连通性检查
+→ 得到有效候选对 → controlling 提名 → 选定路径 → 媒体传输与保活</code></pre>
+<h2>1. 为什么需要 ICE</h2>
+<p>A 家的 <code>192.168.1.10:5000</code> 不是互联网上可直接路由到的地址，B 家也可能用同一个私网地址。NAT 会改写包的来源 IP/端口，并按规则放行回包。知道一个地址不等于知道它能不能通，ICE 用实测来选路。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2">RFC 8445 §2</a></p>
+<h2>2. 收集候选：我可能从哪里被联系到</h2>
+<ul><li><strong>host</strong>：本机接口上绑定的 IP 和端口；同一局域网里可能直接可达。</li><li><strong>srflx</strong>：从本地 UDP socket 向 STUN 服务器查询，得到服务器看到的映射 IP/端口。查到地址不保证对端能打进来。</li><li><strong>relay</strong>：向 TURN 申请的中继地址；发到这里的数据由 TURN 转发。</li><li><strong>prflx（附注）</strong>：检查时才发现、原先没列出的地址，不是靠问 STUN 服务器预先获得的。</li></ul>
+<p>纠正前面的简化说法：<strong>relay 通常在收集阶段就准备好，并参与候选对检查，不是所有直连超时后才开始申请。</strong> srflx 检查失败也不等于必然只能 relay，检查中新发现的 prflx 也可能有帮助；能否直连取决于双方 NAT/防火墙行为，不作“家用路由器一定能通”的保证。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-5.1.1">RFC 8445 §5.1.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.3">§7.3.1.3</a></p>
+<h2>3. 交换信息，再组成候选对</h2>
+<p>应用通过自己的信令通道交换：候选、<code>ice-ufrag</code>（用户名片段）和 <code>ice-pwd</code>（ICE 密码）。常见载体是 SDP；ICE 本身不负责把 SDP 送给对方。信令应可信并受保护；ICE 密码不是媒体加密密钥。</p>
+<p>把“我的本地候选”和“对方的远端候选”配成兼容的候选对，按规则安排检查。例如：<code>A 的 host ↔ B 的 srflx</code>。不是看到一个公网地址就认定成功。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.3">RFC 8445 §2.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.2.2">§6.1.2.2</a></p>
+<h2>4. A/B 示例：不是问服务器，而是互相发检查包</h2>
+<p><strong>以下 IP、端口和字段均为虚构教学示意，不是真实抓包。</strong> 假设这次检查中 NAT 保持下列映射，且允许包通过：</p>
+<pre><code>A：192.168.1.10:5000 → 203.0.113.10:42000
+B：192.168.2.20:6000 → 198.51.100.20:53000
+
+A                         应用信令                         B
+|------ 交换候选、ufrag/pwd（不走下面的检查通道） -----------|
+|                                                         |
+|-- Binding Request → B 的候选 198.51.100.20:53000 --------&gt;|
+|    A 仍用收集该候选时的 UDP socket                       |
+|    B 实际看到来源：203.0.113.10:42000                     |
+|&lt;-- Binding Success Response ----------------------------|
+|    B 回到实际来源地址，不是照抄信令里的 A 地址            |
+|                                                         |
+|    A 校验响应，通过后得到有效候选对                      |
+|    B 也会发自己的检查；不是双方都只等别人先发            |</code></pre>
+<p>准确一点：直连检查从本地候选关联的 <strong>base（底层本地 socket）</strong> 发往远端候选；srflx 地址不是另绑一个 socket。临时新开 socket 可能产生不同 NAT 映射，不能代表原候选。relay 检查则经 TURN 转发，并非从中继 IP 在本机直接发包。B 的 ICE 程序回复，路由器只做 NAT/放行，不代替 B 回应。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.2">RFC 8445 §2.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.4">§7.2.4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8489.html#section-6.3.1">RFC 8489 §6.3.1</a></p>
+<h2>5. Binding 请求里有什么</h2>
+<p>它是二进制 STUN 报文，不是 HTTP。下列只是可读字段示意，省略了编码细节，没有伪造 MAC 值；假设 A 为 controlling：</p>
+<pre><code>A → B：Binding Request
+  Type                 0x0001
+  Length               后续属性字节数（不含 20 字节固定头）
+  Magic Cookie         0x2112A442
+  Transaction ID       本次事务的 96 位随机编号
+  USERNAME             B的ufrag:A的ufrag
+  PRIORITY             用于可能发现的 prflx 候选的优先级
+  ICE-CONTROLLING       A 的角色及 64 位冲突裁决值
+  MESSAGE-INTEGRITY    用 B 的 ICE 密码计算的 HMAC（值省略）
+  FINGERPRINT          STUN 报文 CRC 校验（值省略）
+
+B → A：Binding Success Response
+  Type                 0x0101
+  Transaction ID       与请求相同
+  XOR-MAPPED-ADDRESS   B 实际看到的 A 来源 IP/端口
+  MESSAGE-INTEGRITY    本次事务仍用 B 的 ICE 密码（值省略）
+  FINGERPRINT          STUN 报文 CRC 校验（值省略）</code></pre>
+<p>B 用自己的 ICE 密码校验请求；A 收到响应后匹配事务编号、验证 MESSAGE-INTEGRITY，并检查地址等条件，不是“随便回个包就算通”。无响应时按规则重传，最终可能超时失败。</p>
+<p><strong>两个 fingerprint 不要混：</strong> STUN 的 <code>FINGERPRINT</code> 是 CRC-32 衍生的报文校验，不是安全认证，也不是 SDP 的 <code>a=fingerprint</code>（DTLS 证书哈希）。完整性认证由 MESSAGE-INTEGRITY 承担；这仍依赖可信的信令交换。</p>
+<p>字段依据：<a href="https://www.rfc-editor.org/rfc/rfc8489.html#section-5">RFC 8489 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8489.html#section-14.5">§14.5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8489.html#section-14.7">§14.7</a>；ICE 属性与验证：<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.1">RFC 8445 §7.2.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.2">§7.2.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.5">§7.2.5</a>。</p>
+<h2>6. 检查成功 ≠ 最终选路</h2>
+<p>有效成功响应说明：<strong>这次请求从 A 到了 B，响应也回到了 A</strong>。它不保证以后一直畅通，也不保证大包、媒体质量或编解码正常。</p>
+<p>若有多对能通，由 <strong>controlling</strong> 方挑有效对，再发带 <code>USE-CANDIDATE</code> 的 Binding 请求进行提名；controlled 方按规则接受、完成检查并确认。提名成功后，双方使用选定对，而不是各自随意选一条。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7">RFC 8445 §7</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-8.1.1">§8.1.1</a></p>
+<h2>7. 选路之后：音频加密与静音保活</h2>
+<p>浏览器 WebRTC 音频通常接着在选定路上做 DTLS 握手、导出 SRTP 密钥，再用 SRTP/SRTCP 保护 RTP/RTCP。<strong>ICE 找路，TURN 转发，二者都不自动加密媒体</strong>；音频包不是套在 DTLS 记录里传。<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-3">RFC 5764 §3</a></p>
+<p>静音不等于挂断。没有 RTP 时仍需要保活维持 NAT 映射；WebRTC 还需持续检查对端是否同意接收。能通过一次检查，不代表可以永远不检查。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-11">RFC 8445 §11</a>、<a href="https://www.rfc-editor.org/rfc/rfc7675.html#section-5.1">RFC 7675 §5.1</a></p>
+<h2>最后分清三件事</h2>
+<ul><li><strong>STUN 查地址</strong>：我问服务器“你看到我来自哪里”；服务器不转发后续音频。</li><li><strong>STUN 连通性检查</strong>：我直接检查对方的候选；回包的是对方 ICE 程序。</li><li><strong>TURN 转发</strong>：选中中继路径后，TURN 真正收包、转包；不等于媒体加密。</li></ul>
+<h2>不看笔记复述一遍</h2>
+<p>A 得到 B 的 srflx 后，为什么还要检查？B 应回哪个地址？检查成功与提名各证明什么？TURN 中转的音频一定加密吗？明天再用自己的话回答一次，不用背字段。</p>
+<p>主读：<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2">RFC 8445 §2</a>，只先看总览。想看实现细节时再读<a href="https://penanegrarenea-ship-it.github.io/rustrtc-lessons/lessons/0002-ice.html">第 2 课</a> / <a href="https://penanegrarenea-ship-it.github.io/rustrtc-lessons/lessons/0003-ice-audio.html">第 3 课</a>；有不清楚的随时问。</p>
+<h2>学习补充：SDP、Trickle 与音频路径</h2>
+<p><strong>SDP 描述，信令交换，ICE 选路，SRTP 保护音频包。</strong> SDP 除了候选和 ICE 凭证，还描述媒体类型和编码；把 SDP 送到对方的是应用信令，例如 SIP 消息或 WebSocket 消息，不是 SDP 自己发包。<code>candidate</code> 仅表示“可以试试”，不是“已经检查成功”。<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.2.1">RFC 8839 §4.2.1</a></p>
+<h3>Trickle 的多次发送</h3>
+<p>初始 offer/answer 后，应用继续通过信令发送新增候选，不必为每条候选重新进行 offer/answer。<code>sdpMid</code> 关联 SDP 的 <code>a=mid</code>，标识属于哪个媒体段；<code>usernameFragment</code> 关联 <code>ice-ufrag</code>，用于区分 ICE 的哪一轮，不能拿旧轮次的延迟候选混入重启后的会话。它们不是一回事，也不是固定由 ICE 规定的 JSON 格式。<a href="https://www.rfc-editor.org/rfc/rfc8838.html#section-9">RFC 8838 §9</a>、<a href="https://www.rfc-editor.org/rfc/rfc5888.html#section-4">RFC 5888 §4</a></p>
+<pre><code>应用信令示意（不是抓包，也不是固定消息格式）：
+A → B：offer（描述媒体、ICE 凭证及已有候选）
+B → A：answer
+A → B：新候选①（对应的 mid、ICE ufrag）
+A → B：新候选②（同一轮，不重新 offer/answer）
+B → A：新候选①
+A → B：本轮候选收集结束</code></pre>
+<p>接收端若尚未设置对应的远端 SDP，应用先暂存候选，待能关联媒体段和 ICE 轮次后再交给 ICE；这是信令程序需要处理的时序，不是让 STUN 服务器替应用通知对方。</p>
+<h3>检查之后，RTP 发到哪里</h3>
+<p>双方成功协商使用 ICE，且产生选定候选对后，媒体栈按选定对发送，不是盲用 <code>c=</code> 地址和 <code>m=</code> 端口；两者的值也可能恰好相同。仅本端打开 ICE，并不代表对端支持。没有协商 ICE 的普通 SIP RTP，通常仍按 SDP 的 <code>c=</code>/<code>m=</code> 发送。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-12.1">RFC 8445 §12.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.3.3">RFC 8839 §4.3.3</a></p>
+<p>检查和媒体沿用该候选关联的 UDP socket/base，不能检查后随便换一个端口，期待 NAT 映射仍有效；relay 则经 TURN 转发。<strong>STUN 是协议，不等于公共 STUN 服务器</strong>：双方即使没配公共 STUN 服务，也能在 host 候选之间直接收发 Binding 检查。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.2">RFC 8445 §2.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.4">§7.2.4</a></p>
+<h3>凭证和角色</h3>
+<pre><code>假设用户名片段仅作示意，不是真实凭证：A123、B456
+A → B：USERNAME = B456:A123；用 B 的 ICE 密码计算校验
+B → A：USERNAME = A123:B456；用 A 的 ICE 密码计算校验</code></pre>
+<p>记法：接收方 ufrag 在前，用接收方密码。ICE 密码验证检查报文，不加密音频，仍依赖可信信令保护。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.2">RFC 8445 §7.2.2</a></p>
+<p>完整 ICE 的两端都会主动检查，controlled 不是“只回复”；仅 controlling 负责最终提名。例外是 <strong>ICE-Lite</strong>：只响应检查，不主动发检查；与 full ICE 互通时由 full 端 controlling、主动检查并提名，哪怕 full 端是 SDP answerer。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">RFC 8445 §2.5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.1">§6.1.1</a></p>
+<h3>静音、重启和媒体安全的边界</h3>
+<ul><li>静音可能没有 RTP，但不能仅据此认定断线。NAT 保活维持映射；consent freshness 确认对端仍同意接收，是相关但不同的机制。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-11">RFC 8445 §11</a>、<a href="https://www.rfc-editor.org/rfc/rfc7675.html#section-5.1">RFC 7675 §5.1</a></li><li>ICE restart 更换 <code>ice-ufrag</code> 和 <code>ice-pwd</code>，通过信令交换后重新检查、提名；真换网必须有适用于当前网络的候选，光告诉对方新 IP 不保证恢复。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-9">RFC 8445 §9</a>、<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.4.1.1.1">RFC 8839 §4.4.1.1.1</a></li><li>协议要求与实现不要混：rustrtc e13b5f2 的 restart 只换凭证，保留候选和 socket（<code>src/transports/ice/mod.rs:1646–1652</code>）；不能据此声称它自动重采新网卡候选。其保活也不能等同完整 RFC 7675 consent 实现（见第 3 课核查）。</li><li>WebRTC 主线：<code>SDP 交换 → ICE 检查/提名 → DTLS 导出密钥 → SRTP 音频</code>。纯 RTP 不需 DTLS，SDES-SRTP 从 SDP 协商密钥，也不需 DTLS；ICE 与密钥交换是两件事。<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-3">RFC 5764 §3</a>、<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a></li><li>SRTP 在 RTP 基础上提供加密、完整性认证和防重放，不负责编码声音；ICE 通不代表编码匹配，也不代表 DTLS 已完成。<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3">RFC 3711 §3.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.2">§3.3.2</a></li></ul>
+<p>引用更正：前面聊天将“发送数据”写成 RFC 8445 §11.1，正确是 <strong>§12.1</strong>。</p>
+<p>下一步只读一小段音频 SDP：<code>m=audio</code>、<code>c=</code>、<code>a=rtpmap</code>。先分清端口和 payload type，不展开复杂编码协商。</p>
+<p>继续下一小课：<a href="../lessons/0004-audio-sdp.html">0004 读音频 SDP</a>。</p>
+<p>相关笔记：<a href="../lessons/0005-audio-transport.html">0005 音频传输的分工</a>，整理选路之后的包、播放与质量反馈。</p>
+<nav class="next"><a href="../lessons/0002-ice.html">第 2 课：巩固 ICE</a><a href="../lessons/0003-ice-audio.html">第 3 课：音频通话里的 ICE</a></nav><footer>2026-11-17（Asia/Tokyo）· 基于 RFC 的基础笔记；示例不是真实抓包。</footer></body></html>

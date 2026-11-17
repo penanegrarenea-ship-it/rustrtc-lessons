@@ -1,0 +1,28 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第 4 课：读音频 SDP</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 4 课 · 协议基础 · <a href="../reference/ice-flow.html">ICE 基础流程</a></header>
+<h1>读音频 SDP：m=audio、c=、a=rtpmap</h1>
+<p>本课只学会读三类行：媒体行、连接地址、编码映射。<strong>下面是虚构、删减的 SDP 教学片段，不是真实抓包，也不是完整可直接建立连接的 SDP。</strong></p>
+<pre><code>m=audio 9 UDP/TLS/RTP/SAVPF 111 0
+c=IN IP4 0.0.0.0
+a=rtpmap:111 opus/48000/2
+a=rtpmap:0 PCMU/8000</code></pre>
+<h2>1. m=audio：这是什么媒体，编号是什么</h2>
+<p>格式：<code>m=&lt;媒体&gt; &lt;端口&gt; &lt;协议&gt; &lt;格式列表&gt;</code>。</p>
+<ul><li><code>audio</code>：音频。</li><li><code>9</code>：端口字段。<strong>这个 ICE 场景里是占位端口，不是最终音频目的端口。</strong></li><li><code>UDP/TLS/RTP/SAVPF</code>：传输协议标识；这里描述 WebRTC 常见的 DTLS-SRTP 音频。不要从中误读出“每个音频包都装进 DTLS”。</li><li><code>111 0</code>：这段 RTP 媒体的 payload type（PT）列表，是负载类型编号，不是额外的端口。</li></ul>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-5.14">RFC 8866 §5.14</a>。</p>
+<h2>2. c=：连接地址；与端口分开看</h2>
+<p><code>c=IN IP4 0.0.0.0</code> 中，<code>IN</code> 表示 Internet，<code>IP4</code> 表示 IPv4，最后是连接地址。媒体级 c= 可以覆盖会话级 c=。<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-5.7">RFC 8866 §5.7</a></p>
+<p>本例的 <code>0.0.0.0</code> <strong>是地址占位</strong>，m= 里的 <code>9</code> <strong>是端口占位</strong>，不是同一个字段。ICE 会检查候选并最终选路，不是把音频发到 <code>0.0.0.0:9</code>。这是 ICE 场景里的含义，不要把所有 SDP 中的 0.0.0.0 都机械理解成同一件事。<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.3.1">RFC 8839 §4.3.1</a></p>
+<p>对比：不使用 ICE 的普通 RTP，若片段为 <code>m=audio 40000 RTP/AVP 0</code> 与 <code>c=IN IP4 198.51.100.20</code>，通常就是向 <code>198.51.100.20:40000</code> 发 RTP。这里的地址同样只是文档示例。</p>
+<h2>3. a=rtpmap：用 PT 找编码</h2>
+<p>格式：<code>a=rtpmap:&lt;PT&gt; &lt;编码名&gt;/&lt;RTP时钟率&gt;[/&lt;声道参数&gt;]</code>。</p>
+<ul><li><code>111 opus/48000/2</code>：PT 111 对应 Opus；<code>48000</code> 是 <strong>RTP 时间戳时钟率</strong>，不是码率，也不直接证明麦克风采样率；<code>/2</code> 是声道参数。</li><li>对 Opus，SDP 按规范必须写 <code>opus/48000/2</code>，<strong>即使这时实际发送的是单声道</strong>，因此不能只凭 <code>/2</code> 断定正在发送立体声。</li><li><code>0 PCMU/8000</code>：PT 0 对应 PCMU，RTP 时钟率 8000 Hz。普通音频 rtpmap 省略声道数通常表示 1。</li></ul>
+<p><code>111</code> 这个动态 PT 不是 Opus 永久固定的编号，要看本次 SDP 的映射。依据：<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-6.6">RFC 8866 §6.6</a>、<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-7">RFC 7587 §7</a>。</p>
+<h2>只记一句</h2>
+<p><strong>m= 看媒体、端口、协议和 PT 列表；c= 看地址；rtpmap 把 PT 解释成编码和 RTP 时钟率。</strong></p>
+<p>上一课：<a href="0003-ice-audio.html">音频通话里的 ICE</a>；基础回顾：<a href="../reference/ice-flow.html">ICE 基础流程</a>。主读 RFC 8866 §6.6，先看 rtpmap 的格式即可。有不清楚的随时问。</p>
+<h2>小题</h2>
+<p><code>a=rtpmap:111 opus/48000/2</code> 里的 <strong>111 是端口吗？它是什么？</strong></p>
+<p>先用自己的话回答，再继续下一点。</p>
+<p>继续：<a href="0005-audio-transport.html">第 5 课：音频传输的分工</a></p>
+<nav class="next"><a href="0003-ice-audio.html">第 3 课：音频通话里的 ICE</a><a href="../reference/ice-flow.html">ICE 基础流程回顾</a></nav><footer>2026-11-17（Asia/Tokyo）· RFC 教学示意片段，非完整 SDP、非抓包；本课无代码执行。</footer></body></html>
