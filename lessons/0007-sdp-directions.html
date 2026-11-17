@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 7 课：SDP 媒体方向</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 7 课 · 基础回顾 · <a href="0006-audio-timing-recovery.html">上一课</a></header>
+<h1>SDP 媒体方向：谁发、谁收、怎样暂停</h1>
+<p>本节已学内容整理。读完一对 offer/answer，判断这路音频由谁发送，并分清暂停、拒绝和连接断开。不需要 clone 或运行代码。</p>
+<p><strong>以下 SDP 都是删减的虚构示意，不是真实抓包，也不是可直接发送的完整 SDP。</strong></p>
+<h2>1. 方向从 SDP 作者的视角读</h2>
+<pre><code>A 的 offer：
+m=audio 40000 RTP/AVP 0
+a=sendonly
+
+B 的 answer：
+m=audio 45000 RTP/AVP 0
+a=recvonly</code></pre>
+<p>A 写 sendonly，表示 A 只发这路 RTP 音频。B 写 recvonly，表示 B 只收这路 RTP 音频。接受后，音频方向是 A→B，不是双方都从 A 的视角描述。</p>
+<p>四个方向词都要先看是谁写的：</p>
+<ul>
+<li>sendrecv：我发送，也接收。</li>
+<li>sendonly：我只发送。</li>
+<li>recvonly：我只接收。</li>
+<li>inactive：我既不发送，也不接收这路 RTP。</li>
+</ul>
+<p>方向提议还要经过对方应答，不能只凭本端 offer 就当作最终协商结果。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-5.1">RFC 3264 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">§6.1</a>。</p>
+<h2>2. 不发 RTP，不等于不能发 RTCP</h2>
+<p>B 是 recvonly，仍可向 A 发送 RTCP 接收报告。方向属性约束 RTP 媒体，不禁止 RTCP；sendonly、recvonly、inactive 本身都不关闭 RTCP。</p>
+<pre><code>RTP 音频：A → B
+RTCP 接收报告：B → A，仍可发送</code></pre>
+<p>协商 inactive 表示这路音频双向不发 RTP，不等于整通连接断开。如果连接使用 ICE、DTLS 或应用信令，单凭 inactive 不能判定这些机制已经关闭。这也不是保证网络或实现一定正常，连接状态仍需另外判断。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-5.1">RFC 3264 §5.1</a>。</p>
+<h2>3. 暂停与拒绝不是一回事</h2>
+<pre><code>暂时双向停发这路 RTP：
+a=inactive
+
+普通应答中拒绝这路音频：
+m=audio 0 RTP/AVP 0</code></pre>
+<p>这里的端口 0 解释限定普通单播应答，不讨论 BUNDLE 扩展。它表示拒绝这路媒体，不是暂停，也不能据此认定整通会话全部断开。</p>
+<p>如果只是打算暂时双向停发、之后恢复，本节使用 inactive 协商。恢复也需要新的 offer/answer，不是只修改自己本地的 SDP。比如 A 重新提议 sendrecv，但 B 只愿接收，B 可应答 recvonly；最后仍是 A 发、B 收，而非必然双向。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6">RFC 3264 §6</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-8">§8</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-8.4">§8.4</a>。</p>
+<h2>4. 应答方向有规则，不能随意组合</h2>
+<p>A 的 offer 是 sendonly，B 不能用 sendonly 来接受这路媒体。这不只是“双方白发”的直觉问题，而是违反 offer/answer 的方向规则。</p>
+<ul>
+<li>若接受这路媒体，B 的 answer 只能是 recvonly 或 inactive。</li>
+<li>B 也可以拒绝这路媒体，在普通应答中将该 m 行端口设为 0。</li>
+</ul>
+<p>这里只巩固已做过的配对，不把这一个例子当作所有方向组合的完整规则表。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6">§6</a>。</p>
+<h2>合上笔记再答</h2>
+<ol>
+<li>A 提议 sendrecv，B 只愿接收，B 怎么应答？音频最终谁发给谁？</li>
+<li>B 写 recvonly，还能发送 RTCP 接收报告吗？看到 inactive 能判断 ICE 已断开吗？</li>
+<li>打算暂时双向停发再恢复，选 inactive 还是把普通应答的 m 端口设成 0？恢复时只改本地 SDP 够吗？</li>
+<li>A offer sendonly，B answer sendonly，合法吗？接受时 B 有哪两种合法应答方向？</li>
+</ol>
+<details><summary>作答后查看参考答案</summary><p>1. recvonly，A 发给 B。2. 能；不能。3. inactive；不够，需重新交换 offer/answer。4. 不合法；recvonly 或 inactive，也可以用端口 0 拒绝该媒体。</p></details>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a> 的方向规则段落。隔一天换成 B 发、A 收，再从两端视角复述。不清楚的点可以继续逐个问。</p>
+<p>上一课：<a href="0006-audio-timing-recovery.html">音频时序、抖动与丢包恢复</a>。字段回顾：<a href="0004-audio-sdp.html">读音频 SDP</a>。</p>
+<nav class="next"><a href="0006-audio-timing-recovery.html">第 6 课：音频时序、抖动与丢包恢复</a><a href="../index.html">课程目录</a></nav>
+<footer>2026-11-17（Asia/Tokyo）· 协议基础整理。示意非抓包，本课无代码运行。</footer></body></html>
