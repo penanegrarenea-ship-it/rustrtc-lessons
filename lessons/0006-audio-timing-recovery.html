@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 6 课：音频时序、抖动与丢包恢复</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 6 课 · 基础回顾 · <a href="0005-audio-transport.html">上一课</a></header>
+<h1>音频时序、抖动与丢包恢复</h1>
+<p>本节已学内容整理。目标是分清“包的编号、音频的时间、播放期限”，再判断等待或恢复有没有用。不需要 clone、运行代码或调参数。</p>
+<p><strong>以下序号、时间戳和时间数值均为示意，不是真实抓包。</strong></p>
+<h2>1. 序号回绕，音频时间继续前进</h2>
+<p>RTP 序号是 16 位，每发一个 RTP 数据包增加 1。到 65535 后回到 0，这是正常回绕，不意味着重启。同一个 RTP 会话里，每个 SSRC 有各自的序号和时间戳空间，不能跨来源相减判断丢包。</p>
+<pre><code>同一 SSRC，按顺序收到：65534 → 65535 → 0 → 1
+没有序号缺口。
+
+同一 SSRC，收到：65534 → 0 → 1
+暂缺 65535，但它也可能只是晚到。</code></pre>
+<p>时间戳表示音频采样时间轴上的位置，不是包的网络到达时间，也不是每包加 1。Opus 的 RTP 时钟是每秒 48000 个单位，不是每秒 48000 个包。连续音频按相同包时长发送时：</p>
+<pre><code>每包 20 ms：序号 +1，时间戳 +48000 × 0.020 = 960
+每包 10 ms：序号 +1，时间戳 +48000 × 0.010 = 480</code></pre>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-4.1">RFC 7587 §4.1</a>。</p>
+<h2>2. 静音停发不等于丢包</h2>
+<p>假设同一 SSRC 在静音期间不发这些音频包，下一个实际发出的包接着编号。时间戳仍体现音频采样时刻之间经过的时间：</p>
+<pre><code>序号       时间戳
+100        10000
+           ……静音期间停发……
+101        58000
+
+序号 +1；两个包的采样时刻相隔 1 秒，时间戳 +48000。</code></pre>
+<p>不能仅凭时间戳跳得大，就认定中间丢了许多 RTP 包。这个示例也不表示所有静音都会停发。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-3.1.3">RFC 7587 §3.1.3</a>。</p>
+<h2>3. 到达时间不等于播放时间</h2>
+<pre><code>同一来源，连续三个包，每包 20 ms 音频：
+包序号：  100       101       102
+到达间隔：     10 ms     30 ms
+音频间隔：     20 ms     20 ms</code></pre>
+<p>接收端根据 RTP 时间戳安排同一来源连续音频的播放节奏，不是收到一个就立即播一个。两个包几乎一起到达，也不该把它们承载的连续片段同时播放。</p>
+<ul>
+<li>延迟大：每个包都稳定晚到 300 ms，抖动仍可能很小。</li>
+<li>抖动大：有的包晚到 20 ms，有的晚到 100 ms，到达延迟变化大。</li>
+<li>抖动缓冲区：有限等候晚到的包并整理顺序，不能让包更早到达，也不能消除网络固有延迟。</li>
+</ul>
+<p>适度增加等待，更可能改善“到包忽快忽慢、声音断续”的情况，但会增加播放延迟。它不能修复真正丢失的包。包超过播放期限才到达，通常不再播放。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7005.html#section-3">RFC 7005 §3</a>。</p>
+<h2>4. 缺失声音有不同处理办法</h2>
+<ul>
+<li>抖动缓冲区等晚到包。没有收到的数据不能靠等待凭空恢复。</li>
+<li>PLC（丢包隐藏）在解码端根据已有声音估补缺失片段，尽量减轻听感中断，不保证与原始声音相同。</li>
+<li>FEC（前向纠错）利用发送端提前携带的冗余信息，在保护能力范围内恢复缺失内容，不需要等丢包后再索取。不是任何丢失都能恢复，也不能笼统保证位精确还原；例如 Opus in-band FEC 会把部分重要语音以更低码率重新编码，放在后续包中。</li>
+<li>重传由接收端反馈请求发送端再发，必须看请求到回包的预计耗时和播放期限。它不是 RTCP 接收报告自动触发的必然动作。</li>
+</ul>
+<pre><code>距离播放期限只剩 20 ms
+请求重传到收到包，预计要 100 ms
+100 ms &gt; 20 ms：这次重传赶不上该片段的播放。</code></pre>
+<p>RTT 是往返时间；判断是否值得重传，还要考虑处理等实际耗时。这里仅比较题设的预计总耗时，不承诺某个协议栈一定实现或启用上述机制。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc6716.html#section-4.4">RFC 6716 §4.4（PLC）</a>、<a href="https://www.rfc-editor.org/rfc/rfc6716.html#section-2.1.7">§2.1.7（FEC）</a>、<a href="https://www.rfc-editor.org/rfc/rfc4588.html#section-6.3">RFC 4588 §6.3（重传请求与时限）</a>。</p>
+<h2>合上笔记再答</h2>
+<ol>
+<li>同一 SSRC 按顺序收到 65534、65535、0、1，有缺口吗？</li>
+<li>Opus 每包 20 ms，时间戳增加多少？换成 10 ms 呢？</li>
+<li>序号 100→101，时间戳增加 48000，就能认定丢包吗？所有包稳定晚到 300 ms，加大缓冲能更早听见吗？</li>
+<li>谁等晚到包、谁估补、谁用冗余、谁重新索取？剩余 20 ms，重传耗时 100 ms，赶得上吗？</li>
+</ol>
+<details><summary>作答后查看参考答案</summary><p>1. 没有，正常回绕。2. 960；480。3. 都不能。时间戳跨越可能来自静音停发，缓冲也不能降低固有网络延迟。4. 抖动缓冲区、PLC、FEC、重传；赶不上。</p></details>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a> 的 sequence number 和 timestamp 段落。隔一天不看答案再复述四者分工。不清楚的点可以继续逐个问。</p>
+<p>上一课：<a href="0005-audio-transport.html">音频传输的分工</a>。基础回顾：<a href="../reference/ice-flow.html">ICE 流程笔记</a>。</p>
+<nav class="next"><a href="0005-audio-transport.html">第 5 课：音频传输的分工</a><a href="../index.html">课程目录</a></nav>
+<footer>2026-11-17（Asia/Tokyo）· 协议基础整理。示意非抓包，本课无代码运行。</footer></body></html>
