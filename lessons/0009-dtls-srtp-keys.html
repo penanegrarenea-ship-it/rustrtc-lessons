@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 9 课：DTLS-SRTP：证书、指纹与密钥</title><link rel="stylesheet" href="../assets/style.css"></head><body>
-<header class="course">rustrtc 学习 · 第 9 课 · 协议基础 · <a href="0008-codec-negotiation.html">上一课</a></header>
+<header class="course">rustrtc 学习 · 第 9 课 · 协议基础 · <a href="0008-codec-negotiation.html">上一课</a> · <a href="../reference/dtls-srtp-walkthrough.html">分步流程</a></header>
 <h1>DTLS-SRTP：证书、指纹与密钥</h1>
 <p>本节保存已讲过的证书核对与密钥交换流程。<strong>以下是典型 DTLS 1.2 + ECDHE、双方证书认证的完整握手概念图，不是真实抓包，不涵盖所有 TLS/DTLS 版本或算法。</strong> 不需要 clone 或运行代码。</p>
 <h2>1. 指纹来自本端证书，私钥不发送</h2>
@@ -79,5 +79,5 @@ B：ECDH(b, Aₑ) → 同一个共享秘密 S</code></pre>
 </ol>
 <details><summary>作答后查看参考答案</summary><p>1. B 的 answer 指纹；不匹配就终止。2. 认证握手、产生共享秘密；A 临时私钥加 B 临时公钥。3. 都不是，还需密钥派生。4. B→A；SRTP。5. 不足以，信令真实性与完整性也是前提。</p></details>
 <p>主读 <a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">RFC 5764 §4.2</a>，对照两个方向的 key/salt。隔一天不看图复述“认证、共享秘密、导出、媒体保护”四步。不清楚的点可以继续逐个问。</p>
-<p>上一课：<a href="0008-codec-negotiation.html">编码协商、转码与 PT 重映射</a>。基础回顾：<a href="../reference/ice-flow.html">ICE 流程笔记</a>。</p>
+<p>上一课：<a href="0008-codec-negotiation.html">编码协商、转码与 PT 重映射</a>。基础回顾：<a href="../reference/ice-flow.html">ICE 流程笔记</a>。同一条握手可以逐步看：<a href="../reference/dtls-srtp-walkthrough.html">DTLS-SRTP 分步流程</a>。</p>
 <nav class="next"><a href="0008-codec-negotiation.html">上一课</a><a href="../index.html">课程目录</a></nav><footer>2026-11-18（Asia/Tokyo）· 已学内容整理。所有示意均非抓包，本课无代码运行。</footer></body></html>
