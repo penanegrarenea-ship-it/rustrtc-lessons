@@ -1,0 +1,178 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 15 课：运行并读懂 DataChannel 聊天</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第 15 课 · 30–40 分钟实操 · <a href="../index.html">课程目录</a></header><main><h1>运行并读懂 DataChannel 聊天</h1><nav aria-label="本课目录"><details><summary>本课目录</summary><ul><li><a href="#section-1">1. Windows 11：先固定版本并启动</a></li><li><a href="#section-2">2. 两个页面，明确的验收目标</a></li><li><a href="#section-3">3. 第一张图：一次 HTTP 协商，之后走数据通道</a></li><li><a href="#section-4">4. Rust 端：双方预先约定 chat / id 0</a></li><li><a href="#section-5">5. Rust 端：等候选收集完成，再发 answer</a></li><li><a href="#section-6">6. 打开后再登录、发送、接收与转发</a></li><li><a href="#section-7">7. 第三张图：聊天不是 SRTP 音频</a></li><li><a href="#section-8">8. 已有的真实结果，以及它没有证明什么</a></li><li><a href="#section-9">9. 三个排错场景：从最后一条可靠证据向后查</a></li><li><a href="#section-10">10. 小实践：不改协议，改变消息并证明到达</a></li><li><a href="#section-11">11. 八道自测</a></li><li><a href="#section-12">参考答案</a></li><li><a href="#section-13">12. 回顾与主读来源</a></li></ul></details></nav>
+<p>先跑一个能互发消息的小程序，再把上一课的“描述、路径、安全、应用结果”落实到证据。目标不是一口气写完整 WebRTC 栈，而是：<strong>用两个浏览器页面，经 Rust 服务端双向聊天，并能指出 HTTP 在哪里结束、DataChannel 在哪里接手。</strong></p>
+<p>建议 30–40 分钟：运行与验收 10–15 分钟，读核心代码 12 分钟，排错与练习 8–13 分钟。首次下载、编译可能另需时间。你已熟悉 Rust async/tokio，本课不讲语言基础或环境安装。0014 尚未提交答案，不假定已经掌握；本课会带着你复用证据分层。</p>
+<p>本课钉住 rustrtc 0.6.4 的完整提交 <code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。所有下方源码永久链接均指向这个 SHA，并注明文件与行号。旧课引用的 <code>e13b5f2</code> 不变，不能混用别的 checkout 的行号。</p>
+<p><strong>验证边界：</strong>课前已在云端 Linux、rustc 1.100.0、真实 Chrome 的两个页面中连续两次跑通，未改示例。不是在你的 Windows，也不是在教学共享电脑上复跑；下方 Windows 命令供你实操，未声称已在 Windows 验证。成功截图采集超时，因此本课用实际日志和页面文字，不展示伪造或较早未连通的截图。</p>
+<h2 id="section-1">1. Windows 11：先固定版本并启动</h2>
+<p>以下是<strong>你在自己 Windows 11 的 PowerShell 中运行</strong>的命令，不是本课执行器运行的记录。需要你已有的 Git、Rust 工具链和 Chrome；不在这里重配环境。示例启动方法见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#L430-L440">README.md:430–440</a>。</p>
+<p>选一个全新目录，保留已有工程。若目录已存在，脚本会停止：换一个新名字再运行，不要删除或硬重置旧工程。</p>
+<pre><code>$lessonDir = Join-Path $HOME "rustrtc-0015"
+if (Test-Path $lessonDir) {
+    throw "目录已存在；请给 lessonDir 换一个全新的目录名。"
+}
+git clone https://github.com/restsend/rustrtc.git $lessonDir
+if ($LASTEXITCODE -ne 0) { throw "clone 失败，先处理错误再继续。" }
+Set-Location $lessonDir
+$commit = "f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa"
+git checkout --detach $commit
+if ($LASTEXITCODE -ne 0) { throw "未能切到课程提交，停止。" }
+$head = git rev-parse HEAD
+if ($head -ne $commit) { throw "HEAD 与课程提交不一致，停止。" }
+rustc --version
+$env:RUST_LOG = "info"
+cargo run --example datachannel_chat</code></pre>
+<p>这次 detached checkout 只发生在刚克隆的新目录，不修改你原来的 checkout。若你原先已有工作区，可先在那里用 <code>git status --short</code> 看未提交工作；仍建议本课另开目录，不执行 <code>reset --hard</code>、<code>clean</code> 或强制覆盖。</p>
+<p>保持终端运行。在浏览器打开 <code>http://127.0.0.1:3000/</code>，暂时不要关闭服务端。停止自己这次运行时，在该终端按 Ctrl+C。</p>
+<p>编译版本有一个已验证的坑：云端 rustc 1.85.0 被依赖拒绝，<code>crypto-bigint 0.7.11</code>、<code>ctutils 0.4.8</code> 要求 1.87，<code>rcgen 0.14.10</code> 要求 1.88；随后 1.100.0 构建成功。<strong>1.88 只是该依赖的要求，不是整个工程的兼容保证。</strong>若编译器过旧，用你已配置的较新工具链重试，并保留实际报错。三条 <code>fetch_update</code> 弃用警告在成功构建中也出现过，警告不等于失败。</p>
+<h2 id="section-2">2. 两个页面，明确的验收目标</h2>
+<p>在同一台电脑打开两个页面，按这个顺序做：</p>
+<ol><li>第一个页面输入名字 Alice，点击 <strong>Connect</strong>。等 <code>Status: Connected</code> 和 <code>Connected as Alice</code>，Send 变为可用。</li><li>第二个页面输入不同名字 Bob，点击 <strong>Connect</strong>，同样等 Connected。</li><li>Alice 输入 <code>hello-from-alice</code>，点击 <strong>Send</strong>。必须在 <strong>Bob 页面</strong>看见 <code>Alice: hello-from-alice</code>。</li><li>Bob 输入 <code>hello-from-bob</code>，点击 <strong>Send</strong>。必须在 <strong>Alice 页面</strong>看见 <code>Bob: hello-from-bob</code>。</li><li>记下两边是否 Connected、对方是否收到消息、终端是否记录通道打开。不要公开真实 SDP、ICE 密码或私人聊天内容。</li></ol>
+<p>按钮实际叫 Connect / Send / Disconnect，没有 Join 按钮。界面初始 Send 与 Disconnect 不可用；通道打开后才启用。依据：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L44-L46">examples/static/chat.html:44–46</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L137-L178">137–178</a>。</p>
+<p><strong>只在本页看到 <code>Me: ...</code> 不算发送到对端的证据。</strong>页面是在调用发送后自行追加这行文字，不是等待服务端回执。验收必须看另一页收到的内容。<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L171-L178">examples/static/chat.html:171–178</a></p>
+<p>这不是 Alice 浏览器直连 Bob 浏览器。每个页面各连 Rust 服务端，服务端把消息广播给其他客户端；不是音频回声，也不访问麦克风。</p>
+<h2 id="section-3">3. 第一张图：一次 HTTP 协商，之后走数据通道</h2>
+<p>图 1 是依据示例代码画出的<strong>流程示意，不是抓包或实测时序</strong>。两个页面各自执行一次这样的连接流程。</p>
+<figure><figcaption>图 1 · 每个页面的一次协商与后续聊天（示意，非抓包）</figcaption><pre><code>一个浏览器页面                  Rust 服务端
+收集完本端 ICE 候选
+POST /offer {sdp: "..."}  ────→  解析 offer，准备 answer
+                              收集完本端 ICE 候选
+收到 {sdp: "...", type: "answer"} ← HTTP 响应
+设置远端 answer
+
+        ICE / DTLS / SCTP 建立后，DataChannel open
+login JSON                 ────→ 应用登记名字
+chat JSON                  ────→ 转发到其他客户端
+       后两种消息不再 POST 到 /offer</code></pre></figure>
+<p>浏览器先创建连接和通道，再生成 offer、设置本地描述，等待 ICE gathering complete，最后发送一次 POST。下面两段是<strong>原文件的分段摘录</strong>，中间省略了打印候选和等待收集完成的代码；不要把两段直接拼成跳过等待的新实现。</p>
+<pre><code>pc = new RTCPeerConnection();
+
+// Use negotiated data channel (ID=0) to match server behavior
+dc = pc.createDataChannel("chat", { negotiated: true, id: 0 });
+setupDataChannel(dc, name);</code></pre>
+<p>摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L79-L85">examples/static/chat.html:79–85</a>。</p>
+<pre><code>const response = await fetch('/offer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp })
+});
+
+const answer = await response.json();
+await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answer.sdp }));</code></pre>
+<p>摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L109-L116">examples/static/chat.html:109–116</a>。请求 JSON 只有 <code>sdp</code>，不是你凭印象补出来的 <code>{type, sdp}</code>；响应含 answer 类型，页面这里显式使用 <code>type: 'answer'</code>。</p>
+<p>等待逻辑在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L91-L107">examples/static/chat.html:91–107</a>。<code>onicecandidate</code> 这里只打印候选，没有逐条发送新候选的请求；服务端路由也没有 <code>/candidate</code>。<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L85-L89">examples/static/chat.html:85–89</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L46-L55">examples/datachannel_chat.rs:46–55</a></p>
+<p>所以这是<strong>完整收集后交换 SDP，非 Trickle ICE</strong>。一次连接的一次 POST，不等于以后重连也永远只有一次；更不表示生产系统必须这样设计。HTTP 200 仅说明这次应用请求得到响应，不等于 ICE 或 DataChannel 已成功。</p>
+<h2 id="section-4">4. Rust 端：双方预先约定 chat / id 0</h2>
+<p>服务端每收到一个 offer，就解析描述、选用 WebRTC 配置、建立自己的连接。下面是原文相邻摘录，没有把 <code>unwrap()</code> 改成另一种错误处理，也不是生产级输入验证范例。</p>
+<pre><code>let offer_sdp = SessionDescription::parse(SdpType::Offer, &amp;payload.sdp).unwrap();
+let config = RtcConfiguration::webrtc();
+let pc = PeerConnection::new(config);
+
+// Use negotiated data channel with ID 0
+let dc = pc
+    .create_data_channel(
+        "chat",
+        Some(rustrtc::transports::sctp::DataChannelConfig {
+            negotiated: Some(0),
+            ..Default::default()
+        }),
+    )
+    .unwrap();</code></pre>
+<p>调用位置（包含本段所有 rustrtc 类型/函数）：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L94-L109">examples/datachannel_chat.rs:94–109</a>。配置入口另见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L967-L975"><code>RtcConfiguration::webrtc</code>，src/config.rs:967–975</a>；通道创建签名见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L4119-L4186"><code>PeerConnection::create_data_channel</code>，src/peer_connection.rs:4119–4186</a>。</p>
+<p>对照两端，不要把 Rust 的 <code>Some(0)</code> 误读为 JavaScript 布尔值 false：</p>
+<ul><li>浏览器：<code>negotiated: true, id: 0</code>。</li><li>Rust：<code>DataChannelConfig { negotiated: Some(0), ..Default::default() }</code>。这里的 Option 同时表达“已在应用层约定”及通道编号 0；字段与内部转换见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/datachannel.rs#L147-L161">src/transports/datachannel.rs:147–161</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/datachannel.rs#L189-L199">189–199</a>。</li><li>双方都使用 label <code>chat</code>，并明确约定 id 0。只把名字写成一样，不是所有场景下自动匹配的协议。</li></ul>
+<p><strong>本例不靠 DCEP OPEN/ACK 协商通道。</strong>源码在非 negotiated 时才进入发送 DCEP OPEN 的分支：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L4169-L4184">src/peer_connection.rs:4169–4184</a>。已经约定通道参数，不表示可以省去 ICE、DTLS 或 SCTP 建立。</p>
+<p>作为对照，DCEP 是另一种带内建通道的方法：发送 OPEN，对端 ACK。参见 <a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.5">RFC 8831 §6.5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-4">RFC 8832 §4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.1">§5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.2">§5.2</a>。这是对照知识，不是声称本次聊天抓到了 OPEN/ACK。</p>
+<h2 id="section-5">5. Rust 端：等候选收集完成，再发 answer</h2>
+<p>下面是原示例的连续摘录。留意它实际调用了两次创建 answer，第一份返回值没有作为 HTTP 响应发出；不要悄悄删掉一行再声称是原文。</p>
+<pre><code>pc.set_remote_description(offer_sdp).await.unwrap();
+let _ = pc.create_answer().await.unwrap();
+pc.wait_for_gathering_complete().await;
+let answer = pc.create_answer().await.unwrap();
+pc.set_local_description(answer.clone()).unwrap();
+
+Json(OfferResponse {
+    sdp: answer.to_sdp_string(),
+    type_: "answer".to_string(),
+})</code></pre>
+<p>调用位置（含上述描述解析结果、描述设置与生成函数）：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L206-L215">examples/datachannel_chat.rs:206–215</a>。<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L4270-L4287"><code>wait_for_gathering_complete</code>，src/peer_connection.rs:4270–4287</a> 等待收集状态到 Complete，<strong>不是</strong>等待 ICE 检查已经选路、DTLS 已完成、对端已经收消息。</p>
+<p>读代码时用三种不同问题做标记：</p>
+<ol><li><code>set_remote_description</code>：程序拿到了哪份远端描述？</li><li>gathering complete：程序是否已把本轮候选收集完？</li><li>DataChannel open、对页收消息：运行是否推进到可交换应用数据？</li></ol>
+<p>这些调用在本例中的位置均见上面的 206–215 行；不能把“已有 answer”写成“通道已经 open”。本课只解释当前示例，不把这段结构宣称为所有连接场景的唯一最佳写法。</p>
+<h2 id="section-6">6. 打开后再登录、发送、接收与转发</h2>
+<p>页面的通道打开回调会启用输入和按钮，并立即发送 login。以下原文摘录属于<strong>应用层聊天协议</strong>，不是 ICE 密码认证，也不是 DCEP OPEN。</p>
+<pre><code>channel.onopen = () =&gt; {
+    statusDiv.textContent = "Status: Connected";
+    msgInput.disabled = false;
+    sendBtn.disabled = false;
+    disconnectBtn.disabled = false;
+    log("Connected as " + name, "info");
+
+    // Send login message
+    channel.send(JSON.stringify({ type: "login", name: name }));
+};</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L137-L147">examples/static/chat.html:137–147</a>。发送按钮还会检查 <code>dc.readyState === 'open'</code>，然后发送 <code>{type: "chat", content: ...}</code>。<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L171-L178">examples/static/chat.html:171–178</a></p>
+<p>Rust 端不是接收一次完整 HTTP 聊天请求。它从通道的事件入口等消息，收到字节后再解析聊天 JSON；本课只摘取事件匹配的外层，不重写完整任务：</p>
+<pre><code>event = dc_clone.recv() =&gt; {
+    match event {
+        Some(DataChannelEvent::Message(data)) =&gt; {</code></pre>
+<p>摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L137-L139">examples/datachannel_chat.rs:137–139</a>。这里故意是<strong>不完整代码片段</strong>，不能单独编译。事件定义见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/datachannel.rs#L116-L124"><code>DataChannelEvent</code>，src/transports/datachannel.rs:116–124</a>，接收入口见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/datachannel.rs#L247-L250"><code>recv</code>，247–250</a>。</p>
+<p>后续逻辑按 login 记录名字，按 chat 构造广播消息。没有先登记名字，该处理分支不会把 chat 当作已命名用户的聊天广播。另一个异步任务把广播发给其他客户端，跳过发送者本身。完整对应范围：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L117-L174">examples/datachannel_chat.rs:117–174</a>。</p>
+<p>图 2 是代码职责示意，不是实测消息延迟图：</p>
+<figure><figcaption>图 2 · 服务端转发与应用显示（示意，非实测时序）</figcaption><pre><code>Alice 页面       Rust 服务端                 Bob 页面
+login Alice ──→  记录 Alice
+                 记录 Bob    ←───────────── login Bob
+chat ─────────→  广播给其他客户端 ──────────→ 显示 Alice: ...
+显示 Bob: ... ←─ 广播给其他客户端 ←───────── chat
+
+Alice 的 Me: ... 是本地显示，不是上面一圈往返的回执。</code></pre></figure>
+<p>Rust 发送侧使用 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L4201-L4210"><code>PeerConnection::send_text</code>，src/peer_connection.rs:4201–4210</a>，第一个参数是 channel id。本例转发调用是 <code>send_text(0, msg.text)</code>，位置见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L122-L131">examples/datachannel_chat.rs:122–131</a>。</p>
+<p>不要把页面的 readyState 门禁归给 Rust API：这个 <code>send_text</code> 实现检查 SCTP transport 是否存在，没有在这里检查通道的 Open 状态；不存在时返回 <code>InvalidState("SCTP not connected")</code>。因此应用仍应遵守通道就绪条件，不能推断“调用 API 就替我保证对端收到”。这是固定源码的行为边界，不是本课新复现了失败分支。</p>
+<h2 id="section-7">7. 第三张图：聊天不是 SRTP 音频</h2>
+<p>图 3 是协议分层示意。为看清区别省略包头和复用细节，不是实际报文布局。</p>
+<figure><figcaption>图 3 · DataChannel 与音频的不同分层（示意）</figcaption><pre><code>本课聊天 JSON                     之前学的音频
+     ↓                                 ↓
+SCTP（本例 stream id 0）           RTP / RTCP
+     ↓                                 ↓
+DTLS 保护                         SRTP / SRTCP 保护
+     ↓                                 ↓
+ICE 选出的路径 / UDP               ICE 路径 / UDP（WebRTC 情形）</code></pre></figure>
+<p>DataChannel 在 DTLS 里承载 SCTP 数据；不能把它说成“聊天文字装进音频 SRTP”。音频使用 SRTP 的密钥建立可与 DTLS 有关联，但音频媒体并不是因此变成普通 DTLS 应用数据。依据：<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-1">RFC 8831 §1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-5">§5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6">§6.6</a>。</p>
+<p><strong>本例的 open 不证明音频可播放。</strong>它没有验证麦克风、音频 PT/编码、SRTP 媒体接收、解码器或扬声器；也没有示范 SIP 信令。上课的证据分层仍然成立，但这次应用结果是“另一页收到聊天消息”，不是“听到声音”。</p>
+<p>本地 HTTP 信令演示也不是可直接部署的安全模型。不要把监听地址改成公网就当生产服务，不要使用真实私人内容来做公开演示。</p>
+<h2 id="section-8">8. 已有的真实结果，以及它没有证明什么</h2>
+<p>以下来自<strong>课前云端 Linux 验证</strong>，不是模拟日志，也不是你本机运行结果。rustc 1.100.0 构建成功，退出码 0；示例源码未改。真实 Chrome 两个独立页面的完整流程连续成功两次。</p>
+<p>下面是第二次运行服务端日志的节选。原日志为 UTC，已统一换算为 <strong>2026-11-19（JST / Asia/Tokyo）</strong>；消息内容未改，没有导出凭证。小数位只保留原日志精度，不作为性能测量。</p>
+<pre><code>2026-11-19 01:51:47.896807 JST INFO datachannel_chat: Listening on http://127.0.0.1:3000
+2026-11-19 01:51:48.677214 JST INFO datachannel_chat: Data channel opened for client 1
+2026-11-19 01:51:48.678044 JST INFO datachannel_chat: Client 1 logged in as Alice
+2026-11-19 01:51:49.675125 JST INFO datachannel_chat: Data channel opened for client 2
+2026-11-19 01:51:49.676270 JST INFO datachannel_chat: Client 2 logged in as Bob</code></pre>
+<p>同轮实际页面文字摘录：</p>
+<ul><li>Alice：<code>Connected as Alice</code>；<code>[System]: Bob joined the chat</code>；<code>Me: hello-from-alice</code>；<code>Bob: hello-from-bob</code>。</li><li>Bob：<code>Connected as Bob</code>；<code>Alice: hello-from-alice</code>；<code>Me: hello-from-bob</code>。</li><li>两页记录均为 gathering complete、ICE connected、DataChannel open，且各自 POST /offer 返回 200。这些状态来自验证观测，不是承诺页面一定自带这三个状态栏。</li></ul>
+<p>各项结果要分开解释：HTTP 200 证明应用响应；gathering complete 证明候选收集结束；ICE connected 支持路径连通状态；open 支持数据通道打开；对页出现相应内容才支持本次应用数据传达。没有单项能证明未来永不掉线。</p>
+<p>另一个边界容易忽略：<code>http://127.0.0.1:3000/</code> 是 HTTP 入口，不自动说明 ICE 也使用环回地址。此轮成功连接实际使用<strong>非环回 host 候选</strong>，没有 srflx 或 relay；不公开具体候选地址。WebRTC 配置默认 ICE 服务器列表为空，且默认不包含环回候选：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L998-L999">src/config.rs:998–999</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1038-L1039">1038–1039</a>，相关地址筛选见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/ice/mod.rs#L5239-L5265">src/transports/ice/mod.rs:5239–5265</a>。</p>
+<p>所以只能说“这次本地双页面互通成功”。<strong>没有验证跨公网，没有配置 STUN/TURN，也没有复现只有环回网卡的机器会怎样失败。</strong>不能把这些未测条件写成通过或必然失败。</p>
+<h2 id="section-9">9. 三个排错场景：从最后一条可靠证据向后查</h2>
+<h3>场景 A：服务没起来，或者只有根页面能开</h3>
+<p>若终端提示地址已占用，先确认是否自己另一个示例还在运行。这份示例绑定 127.0.0.1:3000，不能假设命令带了可改端口参数。只停止自己确认的旧服务，不去结束不认识的进程。<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L46-L55">examples/datachannel_chat.rs:46–55</a></p>
+<p>若 <code>/</code> 能开，<code>/static/chat.html</code> 却 404，核对启动工作目录。根页面经编译时嵌入，静态目录按运行时相对路径 <code>examples/static</code> 查找：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L46-L60">examples/datachannel_chat.rs:46–60</a>。云端实际验证了错误工作目录下 200/404、仓库根目录下 200/200。<code>favicon.ico</code> 404 单独出现不等于聊天失败。</p>
+<h3>场景 B：POST /offer 为 200，但 Send 还不能用</h3>
+<p>这不是“HTTP 已成功所以一定是按钮坏了”。检查浏览器是否真的收到并设置 answer、候选是否收集并交换、当前 ICE 状态是否推进、DTLS/SCTP 与通道是否打开；按最后已确认的一层向后查。具体缺证据时，写“尚未证实 open”，不要自动判定某层故障。</p>
+<p>默认未配 STUN/TURN，跨网络不能照搬本机成功。本节不编造配置补丁，不让你关掉证书验证、明文替代 DTLS 或随便改通道 id 来碰运气。先保留脱敏状态和错误；不要把完整凭证贴到公开仓库。</p>
+<h3>场景 C：本页已有 Me，另一页没看到</h3>
+<p>先分别核对两页是否 open、用了不同用户名、是否在 open 之后完成应用 login、发送内容非空，以及服务端是否收到并转发。最后看对端是否处理并显示消息。只看本页的 Me 不足以定位断点。</p>
+<p>应用登录、聊天广播、接收显示的依据仍是 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L117-L174">examples/datachannel_chat.rs:117–174</a> 与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L137-L178">examples/static/chat.html:137–178</a>。这些是<strong>排查路径</strong>，不是声称三个故障都已在课前复现。</p>
+<h2 id="section-10">10. 小实践：不改协议，改变消息并证明到达</h2>
+<p>先完成原样双向验收，再做一个能立即核对的小变化：无需修改 Rust API、SDP 或通道编号。</p>
+<ol><li>保持 Alice / Bob 两页已连接。Alice 发 <code>lesson-0015-check-1</code>，Bob 回 <code>received-check-1</code>。</li><li>分别记录“发送页本地 Me”和“接收页对方名字”两项，比较哪项能证明对页收到。不要只交一张发送侧文字。</li><li>Bob 点击 Disconnect；待界面恢复可连接后，把用户名改成 Bob2，再点击 Connect。等连接完成后重新互发一条带新标记的消息，观察 Alice 的接收署名。</li><li>写一张四行卡：固定 SHA；HTTP 与数据通道的分界；双方实际应用接收证据；尚未验证的条件（例如跨公网和音频）。</li></ol>
+<p>前两步复用课前已验证的发送路径。第三步是给你的<strong>实操观察任务</strong>：页面确有断开/重新启用名字输入的处理，但本课云端记录没有单独验收 Bob2 重连，不把练习目标写成已经观察到的结果。相关界面处理见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L119-L135">examples/static/chat.html:119–135</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L160-L167">160–167</a>。</p>
+<h2 id="section-11">11. 八道自测</h2>
+<p>先独立答，最后展开参考答案；不必逐题等聊天回复。简答题没有靠选项长度暗示答案。</p>
+<ol><li>为什么要在 Bob 页面看到 <code>Alice: hello-from-alice</code>，不能只凭 Alice 的 <code>Me: hello-from-alice</code> 验收成功？</li><li>本例每个页面连接时，POST /offer 的请求 JSON 有哪些字段？候选是逐条经额外请求发送的吗？HTTP 200 能否证明 open？</li><li>浏览器 <code>negotiated: true, id: 0</code> 对应 Rust 的哪项值？本次是否发送 DCEP OPEN/ACK 来协商 chat？哪些底层建立仍不可省略？</li><li>服务端等待 gathering complete，与等到 DataChannel open 是同一件事吗？代码实际把第几份创建出的 answer 发回？</li><li>login 属于 ICE、DTLS、DCEP 还是应用协议？聊天是否每发一句都走 POST，是否浏览器之间直接传递？</li><li><code>send_text(0, msg.text)</code> 的 0 是什么？Rust 此处是否检查浏览器的 readyState？仅“调用了发送”能否保证另一页收到？</li><li><code>/</code> 返回 200、<code>/static/chat.html</code> 返回 404，先检查哪里？为什么 HTTP 127.0.0.1 不能证明 ICE 用了 loopback？</li><li>解释“本地聊天双向成功，但跨公网和音频播放仍未知”。从 0014 的证据分层中，写出本例一个成功证据和一个不能推出的结论。</li></ol>
+<h2 id="section-12">参考答案</h2><details class="answer-section"><summary>第 1 题参考答案</summary><p>Me 是发送页面自行追加的文字，不是服务端或对端回执。另一页显示带发送者名字和对应标记的消息，才支持该次应用消息传达。</p></details><details class="answer-section"><summary>第 2 题参考答案</summary><p>请求只有 sdp；页面等待候选收集 complete 后一次发送，onicecandidate 只打印，不是 Trickle。HTTP 200 不证明通道 open。</p></details><details class="answer-section"><summary>第 3 题参考答案</summary><p>对应 DataChannelConfig.negotiated 的 Some(0)，双方已约定 chat/id0，不靠 DCEP OPEN/ACK 建通道。ICE、DTLS、SCTP 仍需建立。</p></details><details class="answer-section"><summary>第 4 题参考答案</summary><p>不同：前者是候选收集结束，后者是数据通道已打开。原代码第一份 answer 返回值丢弃，等待后生成并发回第二份。</p></details><details class="answer-section"><summary>第 5 题参考答案</summary><p>login 是应用聊天协议，不是安全身份认证或 DCEP。聊天 JSON 走浏览器到 Rust 的数据通道，再由 Rust 广播给其他客户端，不是逐句 POST 或浏览器直连。</p></details><details class="answer-section"><summary>第 6 题参考答案</summary><p>0 是通道编号。Rust 此实现检查 SCTP transport 是否存在，不检查浏览器 readyState/Open；页面自己有 open 门禁。调用发送不保证对页已接收或显示。</p></details><details class="answer-section"><summary>第 7 题参考答案</summary><p>先核对是否从仓库根目录启动：根 HTML 编译时嵌入，静态目录是相对路径。HTTP 入口与 ICE socket 路径不同；此轮实际用非环回 host 候选，默认不含环回候选。</p></details><details class="answer-section"><summary>第 8 题参考答案</summary><p>云端双页面确有对方消息支持本次本地应用互通；无 STUN/TURN 的测试不证明跨公网。DataChannel 的 SCTP/DTLS 路线不等于音频 SRTP、解码与播放验证，open 也不证明扬声器有声。</p></details>
+<h2 id="section-13">12. 回顾与主读来源</h2>
+<p>明天不看正文，重画图 1，在 HTTP 响应后写下还需要什么运行证据；再用一句话对比“gathering complete、open、对页收消息”。隔一天回忆 negotiated 与 DCEP 的区别，不把这次读过当成已经熟练实现。</p>
+<p>可以一次提交“0015 四行实践卡 + 八题答案”，或直接追问某段代码。不要提交真实密码、密钥或完整敏感 SDP。0014 的题仍可另交，不把未作答内容记为掌握。</p>
+<p>主读是固定版本的 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L94-L174">examples/datachannel_chat.rs:94–174</a> 与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L206-L215">206–215</a>，对照 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L79-L116">examples/static/chat.html:79–116</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L137-L178">137–178</a>。先圈出协商、等候、收消息、转发四处，再看 RFC，不需先读完整内部传输实现。</p>
+<p>协议主来源：<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-1">RFC 8831 §1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-5">§5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.5">§6.5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6">§6.6</a>；DCEP 对照：<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-4">RFC 8832 §4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.1">§5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.2">§5.2</a>。</p>
+<p>上一课：<a href="0014-offer-answer-evidence.html">0014 成对协商与证据</a>。复习：<a href="0009-dtls-srtp-keys.html">0009 DTLS-SRTP 密钥图解</a>、<a href="0012-srtp-packet-srtcp.html">0012 SRTP 包与 SRTCP</a>。这次从纸面转向数据通道实际应用，不是宣称以前的音频练习都已验收。</p></main><nav class="next"><a href="0014-offer-answer-evidence.html">上一课：成对协商与运行证据</a><a href="../index.html">课程目录</a></nav><footer>2026-11-19（Asia/Tokyo）· 源码固定 f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa。云端 Linux 实测与教学示意分开标注；Windows 命令供读者自行实操。</footer></body></html>
