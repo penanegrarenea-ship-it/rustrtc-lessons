@@ -1,0 +1,19 @@
+/* 两节包识读课程共用；继承 style.css，不影响旧课。 */
+.lesson-packets { overflow-wrap: anywhere; }
+.lesson-packets header, .lesson-packets nav { flex-wrap: wrap; }
+.lesson-packets figure { margin: 1rem 0; min-width: 0; }
+.lesson-packets figcaption { color: var(--muted); font-size: .85rem; }
+.lesson-packets pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.lesson-packets code { overflow-wrap: anywhere; }
+.lesson-packets .table-scroll { max-width: 100%; overflow-x: auto; }
+.lesson-packets th, .lesson-packets td { overflow-wrap: anywhere; }
+.lesson-packets .answer-section { margin: 1.2rem 0; }
+.lesson-packets .answer-section summary { padding: .2rem 0; }
+.lesson-packets .answer-section li { margin: .7rem 0; }
+.lesson-packets img, .lesson-packets svg { max-width: 100%; height: auto; }
+@media (max-width: 420px) {
+  .lesson-packets { padding: 1.5rem 1rem 3rem; }
+  .lesson-packets h1 { font-size: 1.55rem; }
+  .lesson-packets pre { padding: .7rem; }
+  .lesson-packets th, .lesson-packets td { padding: .35rem; }
+}
