@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 9 课：DTLS-SRTP：证书、指纹与密钥</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 9 课 · 协议基础 · <a href="0008-codec-negotiation.html">上一课</a> · <a href="../reference/dtls-srtp-walkthrough.html">分步流程</a></header>
+<h1>DTLS-SRTP：证书、指纹与密钥</h1>
+<p>本节保存已讲过的证书核对与密钥交换流程。<strong>以下是典型 DTLS 1.2 + ECDHE、双方证书认证的完整握手概念图，不是真实抓包，不涵盖所有 TLS/DTLS 版本或算法。</strong> 不需要 clone 或运行代码。</p>
+<h2>1. 指纹来自本端证书，私钥不发送</h2>
+<p>每端先准备自己的证书和对应私钥。证书可以由端点生成，也可以预先配置，包含公钥；指纹不是另发的一把密钥：</p>
+<pre><code>A：证书 A + 证书私钥 A（留在本端）
+   SHA-256(完整证书 A 的 DER 字节) = 指纹 A
+
+B：证书 B + 证书私钥 B（留在本端）
+   SHA-256(完整证书 B 的 DER 字节) = 指纹 B</code></pre>
+<p>本例把各自指纹放进 SDP，由应用信令传给对方。这里只给占位文字，不伪造可用指纹或密钥：</p>
+<pre><code>A 的 offer：
+a=fingerprint:sha-256 &lt;指纹A，省略的占位文字，不是合法值&gt;
+a=setup:actpass
+
+B 的 answer：
+a=fingerprint:sha-256 &lt;指纹B，省略的占位文字，不是合法值&gt;
+a=setup:active</code></pre>
+<p>B 选 active，所以 B 是 DTLS 客户端，先发 ClientHello；浏览器 A 在本例是 DTLS 服务器。这个 setup 角色与谁是浏览器、谁控制 ICE、谁发送音频不是同一个概念。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-5">RFC 8122 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-6.2">§6.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-5">RFC 5763 §5</a>。</p>
+<h2>2. 信令给预期指纹，握手给实际证书</h2>
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="handshake-title handshake-desc" viewBox="0 0 760 690" width="100%"><title id="handshake-title">证书与远端 SDP 指纹的双向核对</title><desc id="handshake-desc">浏览器 A 是 DTLS server，服务器 B 选择 active，是 DTLS client。双方先经信令交换预期指纹，ICE 选通后由 B 发起握手；收到证书后与远端 SDP 指纹核对，完成签名与握手校验，再使用 SRTP。示意非抓包。</desc><defs><marker id="handshake-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#1d1d1f"/></marker></defs><g font-family="sans-serif" font-size="16" fill="#1d1d1f"><text x="130" y="28" text-anchor="middle" font-size="18">浏览器 A</text><text x="130" y="50" text-anchor="middle" font-size="18">DTLS server</text><text x="630" y="28" text-anchor="middle" font-size="18">服务器 B</text><text x="630" y="50" text-anchor="middle" font-size="18">DTLS client</text><line x1="130" y1="70" x2="130" y2="650" stroke="#9b9ba3" stroke-dasharray="6 6"/><line x1="630" y1="70" x2="630" y2="650" stroke="#9b9ba3" stroke-dasharray="6 6"/><text x="380" y="93" text-anchor="middle" font-size="16">经信令：offer 指纹A / actpass</text><line x1="130" y1="105" x2="630" y2="105" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#handshake-arrow)"/><text x="380" y="153" text-anchor="middle" font-size="16">经信令：answer 指纹B / active</text><line x1="630" y1="165" x2="130" y2="165" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#handshake-arrow)"/><text x="380" y="258" text-anchor="middle" font-size="16">DTLS ClientHello + use_srtp</text><line x1="630" y1="270" x2="130" y2="270" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#handshake-arrow)"/><text x="380" y="323" text-anchor="middle" font-size="16">证书A、签名认证的临时公钥 Aₑ</text><line x1="130" y1="335" x2="630" y2="335" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#handshake-arrow)"/><text x="380" y="433" text-anchor="middle" font-size="16">证书B、临时公钥 Bₑ、握手持钥证明</text><line x1="630" y1="445" x2="130" y2="445" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#handshake-arrow)"/><rect x="170" y="195" width="420" height="42" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="380.0" y="220" text-anchor="middle" font-size="16">ICE 选通媒体路径；下方省略部分消息</text><rect x="195" y="360" width="530" height="44" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="460.0" y="385" text-anchor="middle" font-size="16">B：哈希证书A ↔ offer 中的预期指纹A</text><rect x="35" y="470" width="530" height="44" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="300.0" y="495" text-anchor="middle" font-size="16">A：哈希证书B ↔ answer 中的预期指纹B</text><rect x="70" y="550" width="620" height="68" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="380.0" y="575" text-anchor="middle" font-size="16">核对指纹，验证签名与 Finished，完成握手</text><text x="380.0" y="597" text-anchor="middle" font-size="16">密钥导出后：A ↔ B 使用 SRTP 传音频</text><text x="380" y="660" text-anchor="middle" font-size="15">图为概念流程，不是抓包；TURN 只转发，不变成 DTLS 对端。</text></g></svg><details><summary>图的文字版</summary><pre><code>浏览器 A（DTLS server）                         服务器 B（DTLS client）
+       │──经信令：offer 指纹A、actpass──────────────→│
+       │←─经信令：answer 指纹B、active──────────────│
+       │          ICE 检查并选通媒体路径             │
+       │←────────DTLS ClientHello + use_srtp────────│
+       │──证书A、签名认证的临时公钥Aₑ──────────────→│
+       │                       B 对比证书A哈希与offer指纹A
+       │←─证书B、临时公钥Bₑ、握手持钥证明──────────│
+A 对比证书B哈希与answer指纹B                       │
+       │     验证签名、Finished，完成其余握手检查     │
+       │             导出密钥，使用 SRTP             │</code></pre></details>
+<p>图中省略了部分消息。DTLS 发生在 A、B 的媒体路径上，不是与公共 STUN 服务器握手。选中 TURN 中继路径时，TURN 仍只是转发，这次 DTLS 的两端仍是 A、B。</p>
+<p>以 A 校验 B 为例：从 B 的 answer 保存预期指纹；从 DTLS 握手取出 B 的实际证书，计算 SHA-256，与这个远端指纹比较。B 也反过来核对 A。<strong>不是拿 B 的证书去比 A 自己 offer 的指纹。</strong></p>
+<p>不匹配就终止这次安全媒体连接。匹配只说明证书与 SDP 声明一致，还须通过握手签名、Finished 等检查。握手中的持钥证明用来验证对方持有证书对应私钥，不是拿一张公开证书就能冒充。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-5">RFC 5763 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-6.7.1">§6.7.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-2.1">RFC 8422 §2.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-5.8">§5.8</a>。</p>
+<h2>3. 证书认证与临时密钥交换，是两组材料</h2>
+<p>证书密钥负责握手签名与验证。临时密钥负责 ECDHE 密钥交换；两种私钥都留在本端，不发送。</p>
+<pre><code>A 保存临时私钥 a，发送临时公钥 Aₑ
+B 保存临时私钥 b，发送临时公钥 Bₑ
+
+A：ECDH(a, Bₑ) → 共享秘密 S
+B：ECDH(b, Aₑ) → 同一个共享秘密 S</code></pre>
+<p>旁观者看得到证书和临时公钥，但在算法及密钥安全的前提下，不能只靠这些公开材料实际计算出共享秘密。<strong>不是“收到一把加密的共享密钥，再用私钥解密”</strong>：本例没有直接传送共享秘密，缺少的是参与计算所需的临时私钥。</p>
+<p>证书公钥也不能直接算出 SRTP 密钥。签名认证密钥交换内容，密钥交换产生共享秘密；还要继续派生。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-2">RFC 8422 §2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-5.10">§5.10</a>。</p>
+<h2>4. 共享秘密不直接当作音频密钥</h2>
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="keyflow-title keyflow-desc" viewBox="0 0 760 700" width="100%"><title id="keyflow-title">ECDHE 共享秘密到双方向 SRTP 密钥</title><desc id="keyflow-desc">各端用自己的临时私钥与对端临时公钥计算共享秘密，派生 master_secret，经 exporter 分出 client/server 主密钥和盐，再各自做 SRTP 密钥派生。本例 B 是 client，client_write 用于 B 到 A。</desc><defs><marker id="keyflow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#1d1d1f"/></marker></defs><g font-family="sans-serif" font-size="16" fill="#1d1d1f"><rect x="20" y="15" width="340" height="68" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="190.0" y="40" text-anchor="middle" font-size="16">A：临时私钥 a</text><text x="190.0" y="62" text-anchor="middle" font-size="16">+ B 的临时公钥 Bₑ</text><rect x="400" y="15" width="340" height="68" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="570.0" y="40" text-anchor="middle" font-size="16">B：临时私钥 b</text><text x="570.0" y="62" text-anchor="middle" font-size="16">+ A 的临时公钥 Aₑ</text><line x1="190" y1="83" x2="310" y2="123" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><line x1="570" y1="83" x2="450" y2="123" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><rect x="180" y="125" width="400" height="62" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="380.0" y="150" text-anchor="middle" font-size="16">同一个 ECDH 共享秘密 S</text><text x="380.0" y="172" text-anchor="middle" font-size="16">本例作为 premaster secret</text><line x1="380" y1="187" x2="380" y2="220" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><rect x="140" y="222" width="480" height="62" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="380.0" y="247" text-anchor="middle" font-size="16">结合握手上下文，派生 master_secret</text><text x="380.0" y="269" text-anchor="middle" font-size="16">DTLS 1.2 概念图；具体派生依版本及扩展</text><line x1="380" y1="284" x2="380" y2="318" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><rect x="140" y="320" width="480" height="62" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="380.0" y="345" text-anchor="middle" font-size="16">exporter</text><text x="380.0" y="367" text-anchor="middle" font-size="16">EXTRACTOR-dtls_srtp</text><line x1="280" y1="382" x2="190" y2="425" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><line x1="480" y1="382" x2="570" y2="425" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><rect x="15" y="427" width="350" height="86" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="190.0" y="452" text-anchor="middle" font-size="16">client_write_SRTP_master_key</text><text x="190.0" y="474" text-anchor="middle" font-size="16">+ client_write_SRTP_master_salt</text><text x="190.0" y="496" text-anchor="middle" font-size="16">本例 B发送 ↔ A接收</text><rect x="395" y="427" width="350" height="86" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="570.0" y="452" text-anchor="middle" font-size="16">server_write_SRTP_master_key</text><text x="570.0" y="474" text-anchor="middle" font-size="16">+ server_write_SRTP_master_salt</text><text x="570.0" y="496" text-anchor="middle" font-size="16">本例 A发送 ↔ B接收</text><line x1="190" y1="513" x2="190" y2="552" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><line x1="570" y1="513" x2="570" y2="552" stroke="#1d1d1f" stroke-width="1.8" marker-end="url(#keyflow-arrow)"/><rect x="25" y="554" width="330" height="62" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="190.0" y="579" text-anchor="middle" font-size="16">SRTP 密钥派生</text><text x="190.0" y="601" text-anchor="middle" font-size="16">B → A 的实际会话密钥</text><rect x="405" y="554" width="330" height="62" rx="6" fill="#f5f5f7" stroke="#b8b8bf"/><text x="570.0" y="579" text-anchor="middle" font-size="16">SRTP 密钥派生</text><text x="570.0" y="601" text-anchor="middle" font-size="16">A → B 的实际会话密钥</text><text x="380" y="659" text-anchor="middle" font-size="15">共享秘密不直接加密音频；两个发送方向分别有密钥材料。</text><text x="380" y="681" text-anchor="middle" font-size="15">双方各自计算，不把这些秘密密钥直接传到网络上。</text></g></svg><details><summary>图的文字版</summary><pre><code>A：临时私钥a + B临时公钥Bₑ       B：临时私钥b + A临时公钥Aₑ
+                ╲                         ╱
+                 同一个 ECDH 共享秘密 S
+                            ↓
+        作为 premaster secret，结合握手上下文派生 master_secret
+                            ↓
+        exporter，标签 EXTRACTOR-dtls_srtp
+                  ╱                       ╲
+ client_write_SRTP_master_key/salt    server_write_SRTP_master_key/salt
+    本例 B发送 ↔ A接收                   本例 A发送 ↔ B接收
+                  ↓                       ↓
+           SRTP 密钥派生              SRTP 密钥派生
+                  ↓                       ↓
+           B→A 的会话密钥             A→B 的会话密钥</code></pre></details>
+<p>这里的 client/server 指 DTLS 角色，不是 offerer/answerer 的固定别名。A 的发送密钥对应 B 的接收密钥；B 的发送密钥对应 A 的接收密钥。两个方向的主密钥材料分别派生，不是整通电话共用同一把发送钥匙。</p>
+<p>本图的 master_secret 步骤限定 DTLS 1.2 的讲解；具体派生取决于协议版本、协商算法及扩展，不把某个公式泛化到所有 TLS/DTLS。Exporter 导出的是 SRTP 主密钥和主盐，再按选定 SRTP profile 派生实际会话密钥，不是直接把 S 拿来加密音频。</p>
+<p>这些秘密材料由双方各自计算，不把 SRTP 密钥直接发到网络上。握手成功后，正常音频由 SRTP 保护，不是把每个音频包装进 DTLS 应用数据。常见配置使用 AES 等对称算法加密，并配合报文鉴别提供完整性保护；具体保护能力由 profile 决定，本节不展开其他 profile。</p>
+<p>已经协商使用 DTLS-SRTP 时，握手失败不能擅自降级成明文 RTP 继续发送。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5246.html#section-8.1">RFC 5246 §8.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1">RFC 5764 §4.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">§4.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-5.1">§5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-4.3">RFC 3711 §4.3</a>。</p>
+<h2>5. 指纹匹配的前提是信令可信</h2>
+<p>SDP 指纹需要真实性与完整性保护。若攻击者既能替换信令指纹，又能在媒体路径上冒充对端，他可以拿自己的证书匹配自己替换的指纹。单靠“匹配成功”不能保证对方身份可信，更不能单独证明对方就是某家官方服务器。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-8">RFC 5763 §8</a>。</p>
+<h2>合上笔记再答</h2>
+<ol>
+<li>A 校验 B 的实际证书，应该与谁的 SDP 指纹比较？不匹配怎么办？</li>
+<li>证书密钥与临时密钥各负责什么？A 用哪两项算共享秘密？</li>
+<li>这个 ECDHE 例子中，是把共享密钥传来再解密吗？共享秘密能直接拿来加密音频吗？</li>
+<li>本例 B 是 DTLS client，client_write 的材料用于哪个方向？握手后正常音频走 DTLS 应用数据还是 SRTP？</li>
+<li>信令指纹和媒体证书一起被攻击者替换，仅靠指纹匹配足以证明身份吗？</li>
+</ol>
+<details><summary>作答后查看参考答案</summary><p>1. B 的 answer 指纹；不匹配就终止。2. 认证握手、产生共享秘密；A 临时私钥加 B 临时公钥。3. 都不是，还需密钥派生。4. B→A；SRTP。5. 不足以，信令真实性与完整性也是前提。</p></details>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">RFC 5764 §4.2</a>，对照两个方向的 key/salt。隔一天不看图复述“认证、共享秘密、导出、媒体保护”四步。不清楚的点可以继续逐个问。</p>
+<p>上一课：<a href="0008-codec-negotiation.html">编码协商、转码与 PT 重映射</a>。基础回顾：<a href="../reference/ice-flow.html">ICE 流程笔记</a>。同一条握手可以逐步看：<a href="../reference/dtls-srtp-walkthrough.html">DTLS-SRTP 分步流程</a>。</p>
+<nav class="next"><a href="0008-codec-negotiation.html">上一课</a><a href="0010-srtp-secure-receive.html">下一课：SRTP 安全接收</a><a href="../index.html">课程目录</a></nav><footer>2026-11-18（Asia/Tokyo）· 已学内容整理。所有示意均非抓包，本课无代码运行。</footer></body></html>

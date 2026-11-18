@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DTLS-SRTP 分步流程</title>
+<style>
+:root {
+  --fg: #1d1d1f;
+  --muted: #5c5c64;
+  --line: #e2e2e6;
+  --bg: #fff;
+  --code: #f5f5f7;
+  --accent: #b5371f;
+  --pub: #1d4e89;
+  --pubbg: #e7f0fa;
+  --sec: #7a3e12;
+  --secbg: #f8efe6;
+  --der: #0f6b45;
+  --derbg: #e5f6ee;
+  --bad: #9a3412;
+  --badbg: #fde8e4;
+  --ok: #1e7a3c;
+  --okbg: #e8f6ee;
+  --radius: 8px;
+}
+* { box-sizing: border-box; }
+html { font-size: 16px; }
+body {
+  margin: 0 auto;
+  max-width: 68rem;
+  padding: 1.25rem 1rem 3rem;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+header.course { color: var(--muted); font-size: .85rem; border-bottom: 1px solid var(--line); padding-bottom: .45rem; }
+header.course a { color: var(--muted); }
+h1 { font-size: 1.55rem; line-height: 1.3; margin: .7rem 0 .3rem; }
+h2 { font-size: 1.05rem; margin: 1.4rem 0 .4rem; }
+.lede { color: var(--muted); margin: 0 0 .8rem; }
+.banner {
+  background: var(--code);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .55rem .75rem;
+  font-size: .92rem;
+  margin: 0 0 .8rem;
+}
+.legend { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .7rem; }
+.legend span, .tag {
+  display: inline-block;
+  font-size: .75rem;
+  font-weight: 650;
+  letter-spacing: .02em;
+  border-radius: 999px;
+  padding: .05rem .45rem;
+  vertical-align: .05em;
+}
+.pub, .legend .pub { color: var(--pub); background: var(--pubbg); border: 1px solid #b9cfe6; }
+.sec, .legend .sec { color: var(--sec); background: var(--secbg); border: 1px dashed #c9a27a; }
+.der, .legend .der { color: var(--der); background: var(--derbg); border: 1px solid #9dccb4; }
+.steps {
+  display: flex;
+  gap: .35rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  padding: .1rem 0 .45rem;
+  margin: 0 0 .55rem;
+}
+.steps button, .controls button, .quiz button, select {
+  font: inherit;
+  color: var(--fg);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .35rem .7rem;
+  cursor: pointer;
+}
+.steps button { flex: 0 0 auto; border-radius: var(--radius); text-align: left; }
+.steps button[aria-current="step"] { border-color: var(--accent); background: #fbf4f2; font-weight: 650; }
+.steps button:disabled { opacity: .4; cursor: not-allowed; }
+.controls { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: 0 0 .8rem; }
+.controls button[aria-pressed="true"] { border-color: var(--accent); background: #fbf4f2; }
+.controls label { font-size: .92rem; display: inline-flex; gap: .3rem; align-items: center; }
+select { border-radius: var(--radius); }
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11rem, 16rem) minmax(0, 1fr);
+  gap: .7rem;
+  align-items: stretch;
+}
+.party, .wire, .watch, .why, .quiz, .fail {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .7rem .75rem;
+  min-width: 0;
+}
+.party h2, .wire h2, .watch h2 { margin: 0 0 .35rem; font-size: .95rem; }
+.party p.role, .wire p.lane { margin: 0 0 .45rem; color: var(--muted); font-size: .82rem; }
+.party.focus { box-shadow: inset 0 0 0 2px #1d1d1f; }
+.party ul, .wire ul { list-style: none; margin: 0; padding: 0; }
+.chip {
+  display: block;
+  margin: .35rem 0;
+  padding: .35rem .5rem;
+  border-radius: 6px;
+  font-size: .9rem;
+}
+.chip.pub { background: var(--pubbg); border: 1px solid #b9cfe6; }
+.chip.sec { background: var(--secbg); border: 1px dashed #c9a27a; }
+.chip.der { background: var(--derbg); border: 1px solid #9dccb4; }
+.chip, .why, .banner, .party h2 { overflow-wrap: anywhere; }
+.chip small { display: block; color: var(--muted); font-size: .8rem; }
+.packet { margin: 0 0 .65rem; }
+.packet:last-child { margin-bottom: 0; }
+.arrow { position: relative; height: 1.4rem; margin: .15rem 0 .35rem; }
+.track { position: absolute; left: 0; right: .7rem; top: .6rem; height: 2px; background: #1d1d1f; }
+.arrow.b-to-a .track { left: .7rem; right: 0; }
+.arrow.a-to-b .track::after, .arrow.b-to-a .track::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  border: 5px solid transparent;
+}
+.arrow.a-to-b .track::after { right: -8px; border-left-color: #1d1d1f; }
+.arrow.b-to-a .track::after { left: -8px; border-right-color: #1d1d1f; }
+.dot {
+  position: absolute;
+  top: .28rem;
+  width: .55rem;
+  height: .55rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.motion .arrow.a-to-b .dot { animation: slideR 1.15s linear infinite; }
+.motion .arrow.b-to-a .dot { animation: slideL 1.15s linear infinite; }
+@keyframes slideR { from { left: 0; } to { left: calc(100% - .9rem); } }
+@keyframes slideL { from { left: calc(100% - .9rem); } to { left: 0; } }
+.quiet { color: var(--muted); margin: 0; }
+.fail { display: none; background: var(--badbg); border-color: #e7b6ae; margin-top: .7rem; }
+.fail.show { display: block; }
+.why { margin-top: .7rem; background: #fff; }
+.watch { margin-top: .7rem; }
+.watch.hot { box-shadow: inset 0 0 0 2px var(--pub); }
+.extra { display: none; margin-top: .45rem; }
+.watch.hot .extra { display: block; }
+.quiz { margin-top: 1rem; }
+.q { margin: .8rem 0 .3rem; font-weight: 650; }
+.quiz button { display: block; width: 100%; text-align: left; border-radius: var(--radius); margin: .3rem 0; }
+.quiz button.right { border-color: var(--ok); background: var(--okbg); }
+.quiz button.wrong { border-color: var(--bad); background: var(--badbg); }
+.fb { min-height: 1.3em; margin: .2rem 0 .4rem; font-size: .92rem; }
+details { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: .6rem; }
+summary { cursor: pointer; font-weight: 650; }
+footer { color: var(--muted); font-size: .85rem; margin-top: .8rem; }
+code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: .86em; background: var(--code); padding: .05em .3em; border-radius: 4px; }
+@media (max-width: 760px) {
+  .stage { grid-template-columns: 1fr; }
+  .wire { order: -1; }
+  h1 { font-size: 1.35rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot { animation: none !important; left: 42%; }
+}
+</style>
+</head>
+<body>
+<header class="course">rustrtc 学习 · 参考 · <a href="../lessons/0009-dtls-srtp-keys.html">第 9 课</a> · <a href="../index.html">课程目录</a></header>
+<h1>DTLS-SRTP 分步流程</h1>
+<p class="lede">配合第 9 课。本页是典型 DTLS 1.2 + ECDHE、双方证书认证的分组演示。符号用 a、Aₑ、b、Bₑ、S；指纹写成省略的占位。不是抓包，也没有真实密钥。</p>
+<p class="banner">前提：承载指纹的信令有真实性与完整性。指纹能够对上，仍不能单独证明对方是某家官方服务器。客户端不是浏览器的固定角色；本例里浏览器 A 是 DTLS 服务器，服务器 B 选择 active，才是 DTLS 客户端。</p>
+<div class="legend" aria-label="图例">
+  <span class="pub">公开</span>
+  <span class="sec">私密</span>
+  <span class="der">派生·私密</span>
+  <span>标签写在色块上，不单靠颜色区分。</span>
+</div>
+<div class="steps" id="steps" role="tablist" aria-label="步骤"></div>
+<div class="controls">
+  <button type="button" id="prev">上一步</button>
+  <button type="button" id="play" aria-pressed="false">播放</button>
+  <button type="button" id="next">下一步</button>
+  <button type="button" id="reset">重置</button>
+  <label>速度
+    <select id="speed">
+      <option value="4800">慢</option>
+      <option value="2800" selected>标准</option>
+      <option value="1500">快</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="mismatch"> 指纹不匹配</label>
+  <label><input type="checkbox" id="watcher"> 查看旁观者</label>
+  <span class="quiet">键盘 ← →</span>
+</div>
+<div class="stage">
+  <article class="party" id="party-a">
+    <h2>A · 浏览器</h2>
+    <p class="role">本例是 DTLS server</p>
+    <ul id="holds-a"></ul>
+  </article>
+  <article class="wire" id="wire">
+    <h2>这一步越过的通道</h2>
+    <p class="lane" id="lane"></p>
+    <div id="packets"></div>
+  </article>
+  <article class="party" id="party-b">
+    <h2>B · 服务器</h2>
+    <p class="role">本例是 DTLS client</p>
+    <ul id="holds-b"></ul>
+  </article>
+</div>
+<div class="fail" id="fail" role="alert"></div>
+<p class="why" id="why"></p>
+<aside class="watch" id="watch">
+  <h2>旁观者这一步看得见什么</h2>
+  <p id="watch-now"></p>
+  <div class="extra" id="watch-extra"></div>
+</aside>
+<section class="quiz" id="quiz">
+  <h2>三道短题</h2>
+  <p class="quiet">答完只在页内看反馈，不记录对错。</p>
+  <p class="q">1. 证书私钥和临时私钥 a、b 是同一把吗？</p>
+  <button type="button" data-q="1" data-ok="0">是。有了证书就能直接算出 SRTP 密钥</button>
+  <button type="button" data-q="1" data-ok="1">不是。证书私钥用来签名，临时私钥 a、b 只参与 ECDH</button>
+  <p class="fb" id="fb1" aria-live="polite"></p>
+  <p class="q">2. A 核对 B 的证书时，要和哪一份指纹比？</p>
+  <button type="button" data-q="2" data-ok="0">A 自己 offer 里的指纹 A</button>
+  <button type="button" data-q="2" data-ok="1">B 的 answer 里的指纹 B</button>
+  <p class="fb" id="fb2" aria-live="polite"></p>
+  <p class="q">3. 旁观者看见证书、指纹和 Aₑ、Bₑ，但没有 a、b。能算出 S 吗？</p>
+  <button type="button" data-q="3" data-ok="0">能。公开字段已经够把共享秘密算出来</button>
+  <button type="button" data-q="3" data-ok="1">不能。没有临时私钥就算不出 S，指纹匹配也不证明官方身份</button>
+  <p class="fb" id="fb3" aria-live="polite"></p>
+</section>
+<details>
+  <summary>引用与范围</summary>
+  <p>只讲典型 DTLS 1.2 的 ECDHE 与双方证书。DTLS 可能先有 HelloVerifyRequest 和带 cookie 的第二次 ClientHello；本页从完整握手的 ClientHello 讲起，不把 cookie 往返画进来。重传和分片也省略。master_secret 的算法是 DTLS 1.2 沿用的 TLS 1.2 PRF，不是 TLS 1.3 的 HKDF。</p>
+  <ul>
+    <li><a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-5">RFC 8122 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-6.2">§6.2</a> 指纹</li>
+    <li><a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-5">RFC 5763 §5</a> 用远端 SDP 指纹核对证书；<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-8">§8</a> 信令需要保护</li>
+    <li><a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1">RFC 5764 §4.1</a> use_srtp；<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">§4.2</a> exporter 与方向</li>
+    <li><a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-2">RFC 8422 §2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-5.8">§5.8</a>、<a href="https://www.rfc-editor.org/rfc/rfc8422.html#section-5.10">§5.10</a> ECDHE 公钥交换</li>
+    <li><a href="https://www.rfc-editor.org/rfc/rfc5246.html#section-8.1">RFC 5246 §8.1</a> master_secret</li>
+    <li><a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-4.3">RFC 3711 §4.3</a> SRTP 密钥派生</li>
+  </ul>
+</details>
+<footer>2026-11-17 · 教学示意。占位指纹不是合法值。本页无外部脚本、字体或图片。</footer>
+<noscript>
+  <p>启用 JavaScript 后可以分步播放。步骤是：证书与证书私钥、DER 指纹、信令交换、ICE 选路、ClientHello、服务器航班、B 核对 A、B 的证书与临时公钥、本地算出 S、CertificateVerify 与 Finished、A 的 Finished、exporter、SRTP 会话密钥、双向 SRTP。</p>
+</noscript>
+<script>
+(function () {
+  var P = "pub", S = "sec", D = "der";
+  var FP_A = "〈指纹 A，省略的占位，不是合法值〉";
+  var FP_B = "〈指纹 B，省略的占位，不是合法值〉";
+  var steps = [
+    {
+      short: "1 证书",
+      title: "双方各自准备证书和证书私钥",
+      focus: "both",
+      lane: "这一步没有消息离开本机",
+      packets: [],
+      a: [
+        { k: P, name: "证书 A", detail: "含公钥，以后可以发出去" },
+        { k: S, name: "证书私钥 A", detail: "留在 A，用来签名" }
+      ],
+      b: [
+        { k: P, name: "证书 B", detail: "含公钥" },
+        { k: S, name: "证书私钥 B", detail: "留在 B，用来签名" }
+      ],
+      watch: "旁观者还什么都没看见。两把证书私钥从这一步起就不进入网络。",
+      why: "证书密钥负责证明“我持有这张证书”。它不是临时密钥 a、b，也不能直接拿来当 SRTP 密钥。"
+    },
+    {
+      short: "2 指纹",
+      title: "指纹是整张证书 DER 的 SHA-256",
+      focus: "both",
+      lane: "这一步仍然没有消息",
+      packets: [],
+      a: [
+        { k: P, name: "证书 A" },
+        { k: S, name: "证书私钥 A" },
+        { k: P, name: "指纹 A = SHA-256(证书 A 的完整 DER)", detail: FP_A }
+      ],
+      b: [
+        { k: P, name: "证书 B" },
+        { k: S, name: "证书私钥 B" },
+        { k: P, name: "指纹 B = SHA-256(证书 B 的完整 DER)", detail: FP_B }
+      ],
+      watch: "指纹还没送出。它是证书字节的哈希，不是另一把密钥。",
+      why: "算指纹时不使用证书私钥。以后要比对的是这串哈希和实际收到的证书，而不是比两把私钥。"
+    },
+    {
+      short: "3 信令",
+      title: "经信令交换指纹：A actpass，B active",
+      focus: "both",
+      lane: "应用信令。不是下面的 DTLS 媒体路径",
+      packets: [
+        { dir: "a-to-b", title: "A → B  offer", bits: ["指纹 A " + FP_A, "a=setup:actpass"] },
+        { dir: "b-to-a", title: "B → A  answer", bits: ["指纹 B " + FP_B, "a=setup:active"] }
+      ],
+      a: [
+        { k: S, name: "证书私钥 A", detail: "不写进 SDP" },
+        { k: P, name: "已发出的指纹 A" },
+        { k: P, name: "记下的预期指纹 B", detail: "来自 B 的 answer" }
+      ],
+      b: [
+        { k: S, name: "证书私钥 B", detail: "不写进 SDP" },
+        { k: P, name: "已发出的指纹 B" },
+        { k: P, name: "记下的预期指纹 A", detail: "来自 A 的 offer" }
+      ],
+      watch: "旁观者若能看见信令，就看见两份指纹和 setup。看不见任何私钥。信令若能被改，指纹就可以被换成攻击者自己的。",
+      why: "B 选择 active，所以本例 B 是 DTLS 客户端，先发 ClientHello；浏览器 A 是 DTLS 服务器。这和“谁是浏览器、谁发音频”不是同一件事。"
+    },
+    {
+      short: "4 选路",
+      title: "ICE 先选定媒体路径",
+      focus: "none",
+      lane: "ICE 选路。还没有 DTLS 报文",
+      packets: [],
+      a: [
+        { k: S, name: "证书私钥 A" },
+        { k: P, name: "预期指纹 B" },
+        { k: P, name: "选定的候选对", detail: "只说明往哪送，不是密钥" }
+      ],
+      b: [
+        { k: S, name: "证书私钥 B" },
+        { k: P, name: "预期指纹 A" },
+        { k: P, name: "选定的候选对" }
+      ],
+      watch: "旁观者可能看见选中的地址，但还没有证书、临时公钥或 SRTP 密钥。",
+      why: "路径通了不等于握手做完。若走 TURN，中继只转发，不会变成这次 DTLS 的对端。此时没有 S，也没有会话密钥。"
+    },
+    {
+      short: "5 Hello",
+      title: "B 在媒体路径上发送 ClientHello",
+      focus: "b",
+      lane: "媒体路径上的 DTLS",
+      packets: [
+        { dir: "b-to-a", title: "B → A  ClientHello", bits: ["use_srtp", "客户端随机数、套件、支持的组"] }
+      ],
+      a: [
+        { k: S, name: "证书私钥 A" },
+        { k: P, name: "收到 ClientHello", detail: "还没有对方证书" }
+      ],
+      b: [
+        { k: S, name: "证书私钥 B" },
+        { k: P, name: "刚发出的 ClientHello" }
+      ],
+      watch: "旁观者看得见 ClientHello 和 use_srtp。这里还没有证书，没有 Aₑ / Bₑ，没有 S。",
+      why: "use_srtp 只是表示想用 DTLS-SRTP。密钥要等握手做完再导出，不能从这条 Hello 里读出 SRTP 密钥。"
+    },
+    {
+      short: "6 服务器航班",
+      title: "A 送出证书、临时公钥和签名，并请求 B 的证书",
+      focus: "a",
+      lane: "媒体路径上的 DTLS，按这个顺序",
+      packets: [
+        { dir: "a-to-b", title: "1 ServerHello", bits: ["服务器随机数、选定的套件"] },
+        { dir: "a-to-b", title: "2 Certificate", bits: ["证书 A（公开）"] },
+        { dir: "a-to-b", title: "3 ServerKeyExchange", bits: ["临时公钥 Aₑ", "用证书私钥 A 算出的签名"] },
+        { dir: "a-to-b", title: "4 CertificateRequest", bits: ["A 请 B 出示证书。这是请求，里面没有 B 的证书"] },
+        { dir: "a-to-b", title: "5 ServerHelloDone", bits: ["服务器这一航班结束"] }
+      ],
+      a: [
+        { k: S, name: "证书私钥 A", detail: "用它签名，但私钥本身不发送" },
+        { k: S, name: "临时私钥 a", detail: "新生成，只留在 A" },
+        { k: P, name: "临时公钥 Aₑ", detail: "这一步才发出去" }
+      ],
+      b: [
+        { k: S, name: "证书私钥 B", detail: "还没使用" },
+        { k: P, name: "收到的证书 A" },
+        { k: P, name: "收到的 Aₑ 和签名" },
+        { k: P, name: "收到 CertificateRequest", detail: "知道下一步要交自己的证书" }
+      ],
+      watch: "旁观者看得见证书 A、Aₑ 和签名，也看得见“请出示证书”这条请求。看不见证书私钥 A，也看不见临时私钥 a。",
+      why: "签名在网上，私钥不在网上。CertificateRequest 的方向是 A → B，不要画成 B 已经把证书发给了 A。"
+    },
+    {
+      short: "7 核对 A",
+      title: "B 用 offer 里的指纹核对证书 A",
+      focus: "b",
+      check: "offer",
+      lane: "这一步是 B 本地比较，没有新的报文",
+      packets: [],
+      a: [
+        { k: S, name: "证书私钥 A" },
+        { k: S, name: "临时私钥 a" }
+      ],
+      b: [
+        { k: P, name: "预期指纹 A", detail: "来自 A 的 offer" },
+        { k: P, name: "SHA-256(实收证书 A 的 DER)" },
+        { k: S, name: "证书私钥 B" },
+        { k: S, name: "临时私钥还没有生成" }
+      ],
+      watch: "旁观者看不见 B 脑子里的比较结果。比较用的两份材料本身都是公开的：offer 指纹，和刚收到的证书。",
+      why: "B 要比的是“证书 A”和“A 的 offer 指纹”。不是拿 B 的证书去比 A 的指纹。对不上就停，后面的 S 和 SRTP 都不会出现。"
+    },
+    {
+      short: "8 B 的公钥",
+      title: "B 发送自己的证书和临时公钥 Bₑ",
+      focus: "b",
+      lane: "媒体路径上的 DTLS，仍在 ChangeCipherSpec 之前",
+      packets: [
+        { dir: "b-to-a", title: "1 Certificate", bits: ["证书 B（公开）"] },
+        { dir: "b-to-a", title: "2 ClientKeyExchange", bits: ["临时公钥 Bₑ"] }
+      ],
+      a: [
+        { k: S, name: "临时私钥 a" },
+        { k: P, name: "刚收到的证书 B" },
+        { k: P, name: "刚收到的 Bₑ" }
+      ],
+      b: [
+        { k: S, name: "证书私钥 B", detail: "这一步还没拿来签名" },
+        { k: S, name: "临时私钥 b", detail: "只留在 B" },
+        { k: P, name: "已发出的 Bₑ" }
+      ],
+      watch: "旁观者看得见证书 B 和 Bₑ。看不见 b，也看不见 S。这条 ClientKeyExchange 不是“把共享秘密加密后传过来”。",
+      why: "ECDHE 交换的是临时公钥。共享秘密要等下一步，由各自的临时私钥在本地算出来。"
+    },
+    {
+      short: "9 共享 S",
+      title: "两边各自算出同一个 S，再在本地得到 master_secret",
+      focus: "both",
+      lane: "没有新的网络消息。S 不旅行",
+      packets: [],
+      a: [
+        { k: S, name: "临时私钥 a" },
+        { k: P, name: "对方的 Bₑ" },
+        { k: D, name: "S = ECDH(a, Bₑ)", detail: "与 B 得到的是同一个值" },
+        { k: D, name: "master_secret", detail: "由 S 作 premaster，结合两份 Hello 随机数。只在本地" }
+      ],
+      b: [
+        { k: S, name: "临时私钥 b" },
+        { k: P, name: "对方的 Aₑ" },
+        { k: D, name: "S = ECDH(b, Aₑ)" },
+        { k: D, name: "master_secret", detail: "同一套 DTLS 1.2 计算，不发给 A" }
+      ],
+      watch: "旁观者已有 Aₑ 和 Bₑ，仍没有 a 或 b，所以算不出 S，也得不到 master_secret。",
+      why: "这不是用证书公钥直接算出 SRTP 密钥，也不是收到一段密文再用证书私钥解密。Finished 还没发送；master_secret 要先准备好，但 Finished 里也只放 verify_data。此计算只属于 DTLS 1.2，不要当成 TLS 1.3。"
+    },
+    {
+      short: "10 验证 B",
+      title: "B 证明持有证书私钥，A 核对 answer 指纹和 Finished",
+      focus: "both",
+      lane: "媒体路径。先明文签名，再切换记录保护",
+      packets: [
+        { dir: "b-to-a", title: "1 CertificateVerify", bits: ["用证书私钥 B 对握手消息做的签名"] },
+        { dir: "b-to-a", title: "2 ChangeCipherSpec", bits: ["通知改用已协商的记录保护。本身不带密钥"] },
+        { dir: "b-to-a", title: "3 Finished", bits: ["verify_data。由 master_secret 和握手记录算出，不是 S"] }
+      ],
+      a: [
+        { k: P, name: "预期指纹 B", detail: "来自 B 的 answer" },
+        { k: P, name: "SHA-256(实收证书 B) 与指纹 B 一致" },
+        { k: P, name: "用证书 B 的公钥验证了 CertificateVerify" },
+        { k: D, name: "master_secret", detail: "用来检查 Finished，不回传" },
+        { k: S, name: "临时私钥 a" }
+      ],
+      b: [
+        { k: S, name: "证书私钥 B", detail: "签过名，仍留在 B" },
+        { k: D, name: "S 与 master_secret", detail: "没有放进这三条消息" }
+      ],
+      watch: "旁观者看得见 CertificateVerify 的签名。Finished 在切换之后，旁观者看不到里面的 verify_data，更看不到 S。",
+      why: "CertificateVerify 和 Finished 是两件事：前者证明 B 持有证书私钥，后者核对双方看到的握手是否一致。A 拿证书 B 去比的是 answer 里的指纹 B。"
+    },
+    {
+      short: "11 握手完成",
+      title: "A 送回 Finished，B 也核对通过",
+      focus: "a",
+      lane: "媒体路径。握手到这里才算认证完成",
+      packets: [
+        { dir: "a-to-b", title: "1 ChangeCipherSpec", bits: ["不携带密钥"] },
+        { dir: "a-to-b", title: "2 Finished", bits: ["A 的 verify_data。同样不是 SRTP 会话密钥"] }
+      ],
+      a: [
+        { k: D, name: "master_secret", detail: "仍只在本地" },
+        { k: S, name: "证书私钥 A、临时私钥 a" }
+      ],
+      b: [
+        { k: P, name: "已核对 A 的 Finished" },
+        { k: D, name: "master_secret" },
+        { k: S, name: "证书私钥 B、临时私钥 b" }
+      ],
+      watch: "旁观者知道握手报文结束了，但没有拿到任何秘密。此时还没有把音频交给 SRTP。",
+      why: "只有双向 Finished 都通过，才进入后面的导出。握手失败不能改成明文 RTP 继续说话。"
+    },
+    {
+      short: "12 导出",
+      title: "握手成功后，exporter 分出两个方向的主密钥和盐",
+      focus: "both",
+      lane: "仍然没有把这些密钥发送到网络",
+      packets: [],
+      a: [
+        { k: D, name: "exporter", detail: "标签 EXTRACTOR-dtls_srtp" },
+        { k: D, name: "server_write 主密钥 + 盐", detail: "本例 A 发送、B 接收" },
+        { k: D, name: "client_write 主密钥 + 盐", detail: "本例只用来检查 B→A" }
+      ],
+      b: [
+        { k: D, name: "同一套 exporter 输出" },
+        { k: D, name: "client_write 主密钥 + 盐", detail: "本例 B 发送、A 接收" },
+        { k: D, name: "server_write 主密钥 + 盐", detail: "本例只用来检查 A→B" }
+      ],
+      watch: "旁观者看不见导出结果。client_write 不是“浏览器固定使用的那把钥匙”，而是 DTLS 客户端 B 的发送材料。",
+      why: "导出的是 SRTP 主密钥和主盐，还不是最终会话密钥。DTLS 记录层自己的密钥是另一套，不拿来加密音频。长度由选定的 profile 决定，这里不写假的字节数。"
+    },
+    {
+      short: "13 会话密钥",
+      title: "每个方向再用 SRTP KDF 得到会话密钥",
+      focus: "both",
+      lane: "本地派生。音频包还没发出",
+      packets: [],
+      a: [
+        { k: D, name: "A→B 会话加密密钥、会话盐、会话鉴别密钥", detail: "来自 server_write" },
+        { k: D, name: "检查 B→A 用的会话密钥", detail: "来自 client_write，A 不用它来发送" }
+      ],
+      b: [
+        { k: D, name: "B→A 会话加密密钥、会话盐、会话鉴别密钥", detail: "来自 client_write" },
+        { k: D, name: "检查 A→B 用的会话密钥", detail: "来自 server_write" }
+      ],
+      watch: "会话密钥不到网络上。两个方向各有一套，不是整通电话共用一把发送钥匙。",
+      why: "常见 profile 用 AES 做加密，并另有鉴别。存在不加密的 NULL profile，所以不能说 SRTP 永远在加密。本页主线是常见的加密加鉴别，不展开 NULL。"
+    },
+    {
+      short: "14 音频",
+      title: "认证握手完成之后，才双向发送 SRTP",
+      focus: "both",
+      lane: "媒体路径上的 SRTP。不是 DTLS 应用数据",
+      packets: [
+        { dir: "b-to-a", title: "B → A  SRTP 音频", bits: ["用 client_write 派生的会话密钥保护"] },
+        { dir: "a-to-b", title: "A → B  SRTP 音频", bits: ["用 server_write 派生的会话密钥保护"] }
+      ],
+      a: [
+        { k: D, name: "A→B 的发送会话密钥" },
+        { k: D, name: "B→A 的接收会话密钥" },
+        { k: S, name: "a 与证书私钥 A", detail: "仍不出现在音频包里" }
+      ],
+      b: [
+        { k: D, name: "B→A 的发送会话密钥" },
+        { k: D, name: "A→B 的接收会话密钥" },
+        { k: S, name: "b 与证书私钥 B" }
+      ],
+      watch: "旁观者看得见保护后的音频包，看不见会话密钥，也不能靠以前看到的公钥把 S 补算出来。",
+      why: "密钥材料不放进包里。B 发送等于 A 接收，用的是 client_write 这一支；反方向用 server_write。这一步只在前面的核对和双向 Finished 都成功之后才出现。"
+    }
+  ];
+
+  var current = 0;
+  var playing = false;
+  var timer = null;
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!reduce) document.documentElement.classList.add("motion");
+
+  var elSteps = document.getElementById("steps");
+  var elPlay = document.getElementById("play");
+  var elMismatch = document.getElementById("mismatch");
+  var elWatcher = document.getElementById("watcher");
+  var elFail = document.getElementById("fail");
+  var CHECK = 6;
+
+  function maxIndex() {
+    return elMismatch.checked ? CHECK : steps.length - 1;
+  }
+
+  function tagText(k) {
+    if (k === P) return "公开";
+    if (k === S) return "私密";
+    return "派生·私密";
+  }
+
+  function fillHolds(ul, items) {
+    ul.textContent = "";
+    items.forEach(function (item) {
+      var li = document.createElement("li");
+      li.className = "chip " + item.k;
+      var tag = document.createElement("span");
+      tag.className = "tag " + item.k;
+      tag.textContent = tagText(item.k);
+      var name = document.createElement("span");
+      name.textContent = " " + item.name;
+      li.appendChild(tag);
+      li.appendChild(name);
+      if (item.detail) {
+        var small = document.createElement("small");
+        small.textContent = item.detail;
+        li.appendChild(small);
+      }
+      ul.appendChild(li);
+    });
+  }
+
+  function renderPackets(step, failed) {
+    var box = document.getElementById("packets");
+    box.textContent = "";
+    document.getElementById("lane").textContent = failed ? "核对失败，没有继续发送" : step.lane;
+    if (failed || !step.packets.length) {
+      var p = document.createElement("p");
+      p.className = "quiet";
+      p.textContent = failed ? "线上没有 S，没有 SRTP 密钥，也没有音频。" : "无线上的密钥或新报文。";
+      box.appendChild(p);
+      return;
+    }
+    step.packets.forEach(function (pkt) {
+      var wrap = document.createElement("div");
+      wrap.className = "packet";
+      var arrow = document.createElement("div");
+      arrow.className = "arrow " + pkt.dir;
+      var track = document.createElement("span");
+      track.className = "track";
+      var dot = document.createElement("span");
+      dot.className = "dot";
+      arrow.appendChild(track);
+      arrow.appendChild(dot);
+      var title = document.createElement("strong");
+      title.textContent = pkt.title;
+      var ul = document.createElement("ul");
+      pkt.bits.forEach(function (bit) {
+        var li = document.createElement("li");
+        li.className = "chip pub";
+        var tag = document.createElement("span");
+        tag.className = "tag pub";
+        tag.textContent = "公开";
+        li.appendChild(tag);
+        li.appendChild(document.createTextNode(" " + bit));
+        ul.appendChild(li);
+      });
+      wrap.appendChild(arrow);
+      wrap.appendChild(title);
+      wrap.appendChild(ul);
+      box.appendChild(wrap);
+    });
+  }
+
+  function render() {
+    var step = steps[current];
+    var failed = elMismatch.checked && current === CHECK;
+    document.getElementById("party-a").classList.toggle("focus", !failed && (step.focus === "a" || step.focus === "both"));
+    document.getElementById("party-b").classList.toggle("focus", !failed && (step.focus === "b" || step.focus === "both"));
+    fillHolds(document.getElementById("holds-a"), failed ? steps[CHECK].a : step.a);
+    fillHolds(document.getElementById("holds-b"), failed ? [
+      { k: P, name: "预期指纹 A", detail: "来自 offer" },
+      { k: P, name: "实收证书 A 的哈希", detail: "与预期不一致" },
+      { k: S, name: "证书私钥 B", detail: "还在本地，但握手不再继续" }
+    ] : step.b);
+    renderPackets(step, failed);
+    document.getElementById("why").textContent = (current + 1) + "/" + steps.length + "  " + step.title + "。 " + (failed ? "指纹不一致，所以停在这里。" : step.why);
+    document.getElementById("watch-now").textContent = failed ? "旁观者看不到后续的临时公钥、S 或音频，因为 B 已经停止。" : step.watch;
+    elFail.classList.toggle("show", failed);
+    elFail.textContent = failed ? "指纹不匹配：B 算出的证书 A 哈希和 offer 里的指纹 A 不同。握手终止。没有共享秘密 S，没有 exporter，没有 SRTP 会话密钥，也没有音频。" : "";
+    document.getElementById("watch").classList.toggle("hot", elWatcher.checked);
+    var extra = document.getElementById("watch-extra");
+    extra.textContent = "";
+    if (elWatcher.checked) {
+      var p = document.createElement("p");
+      p.textContent = "到本步为止，线上出现过的只有标成公开的字段：指纹、证书、临时公钥、签名、Hello 和受保护的 Finished / SRTP 包。临时私钥 a、b，证书私钥，S，master_secret，以及 SRTP 主密钥和会话密钥都没有箭头。没有 a 或 b，就算不出 S。就算指纹当时对上了，也只说明证书和那份 SDP 一致，不能单独证明对方是某家官方服务器。";
+      extra.appendChild(p);
+    }
+    var buttons = elSteps.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) {
+      var blocked = i > maxIndex();
+      buttons[i].disabled = blocked;
+      if (i === current) buttons[i].setAttribute("aria-current", "step");
+      else buttons[i].removeAttribute("aria-current");
+    }
+    document.getElementById("prev").disabled = current === 0;
+    document.getElementById("next").disabled = current >= maxIndex();
+    elPlay.setAttribute("aria-pressed", playing ? "true" : "false");
+    elPlay.textContent = playing ? "暂停" : "播放";
+  }
+
+  function pause() {
+    playing = false;
+    if (timer) clearTimeout(timer);
+    timer = null;
+  }
+
+  function go(index) {
+    if (index < 0 || index > maxIndex()) return false;
+    current = index;
+    render();
+    return true;
+  }
+
+  function schedule() {
+    if (timer) clearTimeout(timer);
+    if (!playing) return;
+    timer = setTimeout(function () {
+      if (current >= maxIndex()) {
+        pause();
+        render();
+        return;
+      }
+      current += 1;
+      render();
+      schedule();
+    }, Number(document.getElementById("speed").value));
+  }
+
+  steps.forEach(function (step, i) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = step.short;
+    b.addEventListener("click", function () {
+      pause();
+      go(i);
+    });
+    elSteps.appendChild(b);
+  });
+
+  document.getElementById("prev").addEventListener("click", function () {
+    pause();
+    go(current - 1);
+  });
+  document.getElementById("next").addEventListener("click", function () {
+    pause();
+    go(current + 1);
+  });
+  elPlay.addEventListener("click", function () {
+    if (playing) {
+      pause();
+      render();
+      return;
+    }
+    if (current >= maxIndex()) current = 0;
+    playing = true;
+    render();
+    schedule();
+  });
+  document.getElementById("reset").addEventListener("click", function () {
+    pause();
+    current = 0;
+    elMismatch.checked = false;
+    elWatcher.checked = false;
+    document.querySelectorAll(".quiz button").forEach(function (b) {
+      b.classList.remove("right", "wrong");
+    });
+    document.querySelectorAll(".fb").forEach(function (p) { p.textContent = ""; });
+    render();
+  });
+  elMismatch.addEventListener("change", function () {
+    if (current > maxIndex()) current = maxIndex();
+    if (elMismatch.checked && playing && current >= CHECK) pause();
+    render();
+  });
+  elWatcher.addEventListener("change", render);
+  document.getElementById("speed").addEventListener("change", function () {
+    if (playing) schedule();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    var tag = e.target && e.target.tagName;
+    var type = (e.target && e.target.type) || "";
+    if (tag === "SELECT" || tag === "TEXTAREA" || type === "text" || type === "search" || type === "number") return;
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      if (current < maxIndex()) {
+        current += 1;
+        render();
+      }
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      if (current > 0) {
+        current -= 1;
+        render();
+      }
+    }
+  });
+
+  document.querySelectorAll(".quiz button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var q = button.getAttribute("data-q");
+      document.querySelectorAll('.quiz button[data-q="' + q + '"]').forEach(function (b) {
+        b.classList.remove("right", "wrong");
+      });
+      var ok = button.getAttribute("data-ok") === "1";
+      button.classList.add(ok ? "right" : "wrong");
+      var text = {
+        "1": ok ? "对。证书私钥签名，临时私钥 a、b 参与 ECDH。两套材料不要并成一把。" : "不对。证书私钥不能直接算出 SRTP 会话密钥。",
+        "2": ok ? "对。A 用实收的证书 B 去比 B 在 answer 里给出的指纹。" : "不对。offer 里的指纹 A 是留给 B 核对 A 的。",
+        "3": ok ? "对。没有临时私钥就算不出 S。指纹匹配还依赖信令没被掉包，也不能单独证明官方身份。" : "不对。看见公开的 Aₑ、Bₑ 不够，ECDH 需要自己的临时私钥。"
+      };
+      document.getElementById("fb" + q).textContent = text[q];
+    });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

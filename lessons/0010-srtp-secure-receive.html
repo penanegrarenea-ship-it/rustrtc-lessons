@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 10 课：SRTP 安全接收</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 10 课 · 协议基础 · <a href="0009-dtls-srtp-keys.html">上一课</a></header>
+<h1>SRTP 安全接收：校验、防重放与播放期限</h1>
+<p>本节整理已学内容：分清“使用哪种保护”“能否通过安全检查”“是否还赶得上播放”。以下都是概念示意，不是真实抓包，不涉及 API、编译或媒体运行。</p>
+<p><strong>下面的接收判断限定为已协商并启用完整性与防重放保护的连接。</strong> 不能把它们说成所有 RFC 3711 可选配置都无条件提供的能力。</p>
+<h2>1. 查 SRTP profile，不只看 DTLS 算法</h2>
+<p>DTLS 握手的密码套件与 SRTP 保护配置是不同选择。DTLS-SRTP 通过 use_srtp 扩展协商 SRTP protection profile；日志只显示 DTLS 使用 AES-GCM，不能据此认定音频也使用 AES-GCM，仍要查看最终协商出的 SRTP profile。</p>
+<p>密钥也区分方向：A 发送对应 B 接收；B 发送对应 A 接收。A 不能拿自己的发送密钥代替接收 B 音频所需的密钥。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1">RFC 5764 §4.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">§4.2</a>。</p>
+<h2>2. 完整性失败，及时到达也不能播放</h2>
+<p>加密与报文鉴别不是同一个判断。即使处理出了某些字节，只要所要求的完整性校验失败，这个包也必须丢弃，不能交给音频解码器。不能为了避免断音绕过检查；缺失片段可以由 PLC 等机制尝试补偿，但不能播放这个未通过校验的数据。</p>
+<p>完整性通过，是当前密钥与安全上下文下的检查结果，不会单独证明对方是某家官方服务器。对端身份仍依赖上一课讲过的可信信令与证书绑定等前提。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3">RFC 3711 §3.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-8">RFC 5763 §8</a>。</p>
+<h2>3. 合法旧包的副本，也可能是重放</h2>
+<p>攻击者可以不修改合法包，只把截获的包重新发送。已经接收并通过鉴别的同一个包，再来一份相同副本，应由防重放检查丢弃，不应再次播放；完整性通过不能代替防重放。</p>
+<p>防重放检查结合包索引、已接收记录与滑动窗口。它不是等包的计时器，也不是抖动缓冲区的容量或等待时间。</p>
+<p>乱序不一定是重放。同一来源的示意：</p>
+<pre><code>到达顺序：100 → 102 → 101
+
+101 首次到达、仍在允许窗口内、鉴别通过：可能被 SRTP 接受。
+101 已经被接收并鉴别，再收到同一份副本：防重放检查丢弃。</code></pre>
+<p>这里不展开窗口大小或索引算法。符合窗口条件仍须通过其他安全检查，不是“窗口内就都放行”。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.2">RFC 3711 §3.3.2</a>。该节标题确实是 Replay Protection；§3.3.1 是包索引与状态更新。</p>
+<h2>4. 安全上可接受，不等于播放上来得及</h2>
+<pre><code>收到包
+  ↓
+按选定 profile、正确方向密钥与上下文做安全接收处理
+  ├─鉴别失败或判为重放：丢弃，不交给解码器
+  └─通过要求的检查：交给后续媒体接收处理
+                         ↓
+              抖动缓冲区判断播放时序
+                ├─赶上期限：按时序取出
+                └─错过期限：通常不再播放</code></pre>
+<p>这是职责图，不是所有 profile 固定的内部执行顺序。SRTP 接受一个首次晚到包，并不保证它还能赶上播放期限；反过来，包到得很及时，也不能绕过安全检查。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3">RFC 3711 §3.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.2">§3.3.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc7005.html#section-3">RFC 7005 §3</a>。</p>
+<h2>合上笔记再答</h2>
+<ol><li>只看到 DTLS 使用 AES-GCM，就能确定音频也使用 AES-GCM 吗？还要查什么？</li><li>A 能用自己的发送密钥解密 B 发来的音频吗？</li><li>一个包完整性校验失败，但到得很及时，能继续播放吗？已接收的同一合法包副本能再次播放吗？</li><li>首次晚到包通过了 SRTP 安全检查，就保证能及时播放吗？重放窗口是在等晚到包吗？</li></ol>
+<details><summary>作答后查看参考答案</summary><p>参考答案：1. 不能，要查最终协商的 SRTP profile。2. 不能，要用 B 发送方向对应的接收密钥。3. 都不能，分别应因鉴别失败、重放而丢弃。4. 不保证；不是，是否赶上播放由后续媒体时序判断。</p></details>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.2">RFC 3711 §3.3.2</a>，区分重复包和首次乱序包。隔一天不看笔记再解释安全接受与按时播放的区别。不清楚的点可以继续逐个问。</p>
+<p>上一课：<a href="0009-dtls-srtp-keys.html">DTLS-SRTP：证书、指纹与密钥</a>。播放时序回顾：<a href="0006-audio-timing-recovery.html">音频时序、抖动与丢包恢复</a>。</p>
+<nav class="next"><a href="0009-dtls-srtp-keys.html">上一课</a><a href="../index.html">课程目录</a></nav><footer>2026-11-18（Asia/Tokyo）· 已学内容整理。所有示意均非抓包，本课无代码运行。</footer></body></html>

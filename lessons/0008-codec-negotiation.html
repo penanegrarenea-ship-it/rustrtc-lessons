@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 8 课：编码协商、转码与 PT 重映射</title><link rel="stylesheet" href="../assets/style.css"></head><body>
+<header class="course">rustrtc 学习 · 第 8 课 · 协议基础 · <a href="0007-sdp-directions.html">上一课</a></header>
+<h1>编码协商、转码与 PT 重映射</h1>
+<p>本节整理已学内容：先读协商结果，再判断负载该是什么编码。以下 SDP 和流程均为虚构删减示意，不是真实抓包，也不是可直接发送的完整 SDP。本课不运行代码。</p>
+<h2>1. 发什么编码，要看应答</h2>
+<p>假设普通单播连接双方都是 sendrecv，这轮应答已经生效：</p>
+<pre><code>A 的 offer：
+m=audio 40000 RTP/AVP 111 0
+a=rtpmap:111 opus/48000/2
+a=rtpmap:0 PCMU/8000
+a=sendrecv
+
+B 的 answer：
+m=audio 50000 RTP/AVP 0
+a=rtpmap:0 PCMU/8000
+a=sendrecv</code></pre>
+<p>A 提供 Opus 和 PCMU，B 在这份应答中只列 PCMU。A 收到应答后，本例应发送 PT=0、负载确实为 PCMU 的 RTP 包，不能继续随意发送 Opus。</p>
+<p>Offerer 发送的格式须列在 answer 中；answerer 发送的格式须同时列在 offer 和 answer 中。本例不讨论其他方向、额外能力声明或后续重协商，也不表示所有 answer 都只能列一种编码。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-7">RFC 3264 §7</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">§6.1</a>。</p>
+<h2>2. 改 PT 不会转换编码</h2>
+<p>PT 标识负载格式，不是编解码操作。把 Opus 负载的 PT 从 111 改成 0，不会让这些字节变成 PCMU；对端按 PCMU 解码，不能正确还原原来的声音。</p>
+<pre><code>转码：Opus 负载 → 解码为 PCM → PCMU 编码 → 装入 RTP
+
+仅改标签：Opus 负载 → PT 改为 0 → 负载仍是 Opus，不是 PCMU</code></pre>
+<p>如果 A 只有 Opus、B 只有 PCMU，两端没有共同格式，就不能直接协商成功。普通应答应把对应 m 行端口设为 0，拒绝这路媒体。中间服务器若分别与两端协商并实际转码，才可能连接这两段不同编码的媒体。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-7.1">§7.1</a>。</p>
+<h2>3. 同种编码换编号，是 PT 重映射</h2>
+<p>如果另一端也已协商接受同样的 Opus 格式，服务器可以转发 Opus，不必转成 PCMU。两段连接的 PT 映射不同，就按各自映射处理：</p>
+<pre><code>连接 A：PT=111 ↔ Opus
+                ↓ 服务器转发，负载仍为 Opus
+连接 B：PT=112 ↔ Opus</code></pre>
+<p>这个例子改变的是 PT 映射，不是编码，所以不算转码。这只是概念图，不表示实际转发服务器只改 PT 就完成全部报文处理。</p>
+<p>动态 PT 要结合当前会话的 SDP 或其他已知映射解释。只有一个 PT=111 的包、没有映射信息，不能直接认定它是 Opus。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>。</p>
+<h2>4. 编码谈妥，还需要路径可用</h2>
+<p>编码协商解决“用什么格式”；ICE 解决“用哪条可达路径”。在依赖 ICE 的连接中，即使已谈妥 Opus，全部连通性检查失败、没有可用路径，仍不能正常传送这路媒体。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2">RFC 8445 §2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-12.1">§12.1</a>。</p>
+<h2>合上笔记再答</h2>
+<ol>
+<li>按本课第一组应答，A 发 PT111 还是 PT0？负载必须是什么编码？</li>
+<li>把 Opus 的 PT 改成 PCMU 对应编号，能完成转码吗？</li>
+<li>两段连接都接受 Opus，只把 111 映射成 112，算转码吗？没有映射时能认定 111 是 Opus 吗？</li>
+<li>两端无共同编码，能直接协商成功吗？编码一致但 ICE 无可用路径，就能正常传媒体吗？</li>
+</ol>
+<details><summary>作答后查看参考答案</summary><p>1. PT0，PCMU。2. 不能，需要真正转换负载编码。3. 不算；不能。4. 都不能，格式与路径是不同条件。</p></details>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-7">RFC 3264 §7</a>。隔一天用自己的话区分转码、转发和 PT 重映射。不清楚的点可以继续逐个问。</p>
+<p>上一课：<a href="0007-sdp-directions.html">SDP 媒体方向</a>。下一课：<a href="0009-dtls-srtp-keys.html">DTLS-SRTP：证书、指纹与密钥</a>。字段回顾：<a href="0004-audio-sdp.html">读音频 SDP</a>。</p>
+<nav class="next"><a href="0007-sdp-directions.html">上一课</a><a href="0009-dtls-srtp-keys.html">第 9 课：DTLS-SRTP</a></nav><footer>2026-11-18（Asia/Tokyo）· 已学内容整理。所有示意均非抓包，本课无代码运行。</footer></body></html>
