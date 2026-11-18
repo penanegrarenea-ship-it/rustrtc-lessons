@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 12 课：看懂 SRTP 包与 SRTCP</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets">
+<header class="course">rustrtc 学习 · 第 12 课 · 协议基础 · <a href="0011-roc-replay-window.html">上一课</a></header>
+<h1>看懂 SRTP 包：哪些字段可见，哪些被保护，RTCP 如何保护</h1>
+<h2>本课目标与读法</h2>
+<p>用一节完整课，把“我看到了 RTP 头”“我拿到了可信媒体”“我能播放音频”分开。建议用 20–30 分钟：先读解释和图，再完成纸面识别与自测，最后展开答案。这是学习时间建议，不是计时实测。</p>
+<p>学完后，你应能标出常见 SRTP 包的明文头、加密负载和鉴别材料；解释为什么明文字段不能任意修改；区分 SRTP 与 SRTCP 的索引和接收状态，并给出一次无音频排查的下一步。</p>
+<p>本课只讨论包的保护边界，不讲完整密码算法、密钥部署或媒体服务器实现。以下报文、SDP、编号与处理结果都是<strong>虚构教学示意，不是抓包、库日志或 rustrtc 实测</strong>，也不承诺某个库支持某个 profile。涉及保护的例子默认已协商启用对应保护，不把所有可选配置说成一样。</p>
+<h2>1. 看到 PT、序号和时间戳，为什么仍听不到声音？</h2>
+<p>设应用已经为这一方向协商了下面的映射。这只是删减的描述，不是完整 SDP：</p>
+<pre><code>a=rtpmap:111 opus/48000/2</code></pre>
+<p>现在网络上出现一个看起来像 RTP 的包，观察工具把头解析成：</p>
+<pre><code>V=2，P=0，X=0，CC=0，M=0
+PT=111
+sequence=40210
+timestamp=960000
+SSRC=0x13572468
+后面还有一段无法直接解释的字节</code></pre>
+<p>从这个描述，你能知道包<strong>声称</strong>来自哪个同步来源，声称使用哪个负载类型、什么序号与采样时刻。按此处已协商的映射，111 对应 Opus，不是端口，也不是全世界固定的 Opus 编号。</p>
+<p>但你仍不知道这个包是否由当前密钥持有方生成，是否被修改、重复或过旧。若后面的音频负载被加密，没有正确密钥和上下文就不能还原压缩音频。即使成功还原，Opus 字节仍需解码为声音，再按播放时序输出。</p>
+<p><strong>头能读，不等于负载已解密；能解密，也不等于已经通过所有安全和播放检查。</strong> 在鉴别完成前，工具显示的头字段只是解析结果，不能自动当成可信事实。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.1">RFC 3711 §3.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3">§3.3</a>。</p>
+<h2>2. 原来的 RTP 基本头通常留在明文里</h2>
+<p>在本课讨论的常见 SRTP 保护方案中，RTP 基本头中的 PT、sequence、timestamp、SSRC 通常不加密。它们仍处于所选方案的鉴别保护范围内。这让接收端先读取头、查找上下文和安排处理，但不允许攻击者随意改写。</p>
+<p>最小 RTP 头是 12 字节。下面按字节位置阅读，位置从 1 开始。没有 CSRC 和扩展时，头后面才紧接负载：</p>
+<pre><code>字节 1–2：V/P/X/CC、M/PT
+字节 3–4：sequence，16 位
+字节 5–8：timestamp，32 位
+字节 9–12：SSRC，32 位
+后续：若有 CSRC、报头扩展，头还会继续</code></pre>
+<p>不要把“最小 12 字节”变成“所有包第 13 字节都是音频”。CC、X 会影响头的实际长度；是否有填充，也要按格式处理。本课的纸面例子取 CC=0、X=0、P=0，先避免这些额外分支。</p>
+<p>明文与完整性不是反义词：</p>
+<div class="table-scroll"><table><thead><tr><th scope="col">部分</th><th scope="col">本课常见方案下能直接读吗</th><th scope="col">是否可以随意改</th></tr></thead><tbody><tr><td>PT、序号、时间戳、SSRC</td><td>通常可以</td><td>不可以，受鉴别约束</td></tr><tr><td>加密音频负载</td><td>不能直接当音频读</td><td>不可以，受鉴别约束</td></tr><tr><td>IP、UDP 头</td><td>不属于这里的 RTP 基本头</td><td>不应声称由本课 SRTP 鉴别范围一并覆盖</td></tr></tbody></table></div>
+<p>例如攻击者把 PT 从 111 改成 0，保留原鉴别材料。在对应鉴别机制正常工作、攻击者没有密钥的前提下，接收方不能把这个改过的包当作合法 PCMU 播放。旧课说的合法 PT 重映射，不等于可以在受保护包上改一个数而不重新保护。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.1">RFC 3711 §3.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-4.2">§4.2</a>。</p>
+<h2>3. 两种布局，不能拿一张图套所有 profile</h2>
+<h3>3.1 经典 AES-CM 与 HMAC-SHA1 方案</h3>
+<p>下面以 RFC 3711 的经典方案说明边界，假设负载加密并启用了报文鉴别。省略 CSRC、报头扩展和 RTP 填充，图块不是按长度比例绘制：</p>
+<figure><figcaption>字段与职责示意，非抓包，不按字节长度比例绘制</figcaption><pre><code>① RTP 头：明文，受鉴别
+   PT、sequence、timestamp、SSRC
+             ↓
+② 音频负载：密文，受鉴别
+             ↓
+③ 可选 MKI：有配置才出现
+             ↓
+④ authentication tag：用于验证</code></pre></figure>
+<p>这里的 tag 不是媒体密钥，也不是 SDP 证书指纹。接收方按约定算法、密钥和上下文验证它；不是看一眼“末尾有一串字节”就算通过。经典计算也结合 ROC 等上下文，不只是对音频做一次普通无密钥哈希。</p>
+<p>MKI 是 Master Key Identifier，用于在已有上下文里指示主密钥选择，不是主密钥本身，不会让旁观者凭编号算出密钥。它可有可无、长度可配置。在 RFC 3711 这张经典布局中，MKI 不属于 RTP 头与加密负载组成的鉴别范围。因此不能把“基本头受鉴别”扩大成“包里每个附加字节都受同样保护”。</p>
+<h3>3.2 AES-GCM 是 AEAD，不是再套一层相同的 HMAC</h3>
+<p>RFC 7714 定义 AES-GCM 在 SRTP 中的用法。AEAD 把加密与鉴别组合起来：RTP 头作为 Associated Data，简称 AD，参与鉴别但不因此加密；音频负载被加密并鉴别。</p>
+<figure><figcaption>字段与职责示意，非抓包，不按字节长度比例绘制</figcaption><pre><code>① RTP 头：明文 AD，参与鉴别
+             ↓
+② 密文负载 + AEAD 产生的 tag
+             ↓
+③ 可选 MKI：若配置存在</code></pre></figure>
+<p>这是该 RFC 的典型布局，省略其不推荐另加的旧式 authentication-tag 字段。AEAD 本身的 tag 不能省略。RFC 7714 的 AES-GCM 算法使用 16 字节 AEAD tag；这不是“所有 SRTP 包都固定增加 16 字节”，更不表示还应无条件追加一份 HMAC tag。</p>
+<p>做排查时先查最终协商的 SRTP protection profile，再按其格式定位尾部。不能仅由 DTLS 密码套件猜 SRTP 算法，也不能仅凭包尾字节数猜出完整安全配置。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.1">RFC 3711 §3.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-4.1">§4.1–§4.2</a>；<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-1">RFC 7714 §1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-7.1">§7.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-8.2">§8.2</a>。</p>
+<h2>4. 报头扩展不是“所有内容永远明文”</h2>
+<p>RTP 头可以带扩展，里面也可能有敏感信息。RFC 6904 提供选择性加密某些扩展元素内容的机制，需要相应设置与信令约定。它不是把整个 RTP 基本头连 PT、SSRC 全部加密。</p>
+<p>在该机制下，被选中的扩展元素内容可以加密，但元素的小头、某些格式信息与填充并不会一起全部隐藏。对 AES-GCM，RFC 7714 也说明先按扩展加密规则处理选中的内容，再把扩展作为 AD 纳入鉴别。</p>
+<p>所以本课只给两个安全结论：基本头通常可见；扩展的哪些内容可见，要看实际使用的扩展与加密约定。没有配置证据，不要根据一个 X=1 就断言扩展一定明文或一定加密。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc6904.html#section-3">RFC 6904 §3</a>、<a href="https://www.rfc-editor.org/rfc/rfc6904.html#section-4">§4</a>、<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-8.3">RFC 7714 §8.3</a>。</p>
+<h2>5. 音频用 SRTP，控制报告用 SRTCP</h2>
+<p>RTCP 承载接收报告等控制信息，不直接承载本节讨论的音频负载。SRTP 体系用 SRTCP 保护 RTCP。常见 DTLS-SRTP 连接先通过 DTLS 建立材料，随后媒体包是 SRTP、控制包是 SRTCP，不是把它们都塞进 DTLS application data。</p>
+<p>SRTCP 有自己的计数与接收历史，不借用 RTP 的 16 位序号加 ROC。RFC 3711 的 SRTCP 格式显式带有 31 位 SRTCP index，以及 1 位 E 标志：E=1 表示 RTCP 对应部分被加密，E=0 表示未加密，但<strong>不表示不需要鉴别</strong>。</p>
+<p>经典加密 SRTCP 示意如下。底层是一个 RTCP 复合包，省略具体报告内容、可选 MKI 与精确长度：</p>
+<figure><figcaption>字段与职责示意，非抓包，不按字节长度比例绘制</figcaption><pre><code>① 第一个 RTCP 包的前 8 字节：可见
+   包类型、长度、发送者 SSRC 等
+             ↓
+② 后续 RTCP 内容：E=1 时加密
+             ↓
+③ E（1 位）+ SRTCP index（31 位）
+             ↓
+④ authentication tag</code></pre></figure>
+<p>经典方案鉴别 RTCP 内容以及 E/index，不能因为 index 明文就接受它声称的历史。SRTCP 有独立的防重放记录；每发一个 SRTCP 包推进自己的发送 index，不是每发一个 RTP 音频包就推进它。不要把两个计数混用，也不要因使用了同一个端口就共享同一份重放状态。</p>
+<p>对 RFC 7714 的加密 AES-GCM SRTCP，AEAD tag 位于加密内容之后、E/index 之前。布局不是简单把经典图最后一行改名；前 8 字节与 E/index 作为 AD 参与鉴别。这里只要求认识差别，不要求背字节偏移。实现还须遵守所选方案的密钥寿命与索引使用限制，本课不实现计数耗尽处理。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.4">RFC 3711 §3.4</a>、<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-9.2">RFC 7714 §9.2</a>。DTLS-SRTP 媒体不走 DTLS 记录封装见 <a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-5.1">RFC 5764 §5.1</a>。</p>
+<p>接 SIP 媒体时，先分清双方协商的是纯 RTP，还是已启用保护的 SRTP。本课讲后一个分支，不把所有 SIP 通话说成必须先做 DTLS；包怎样保护与密钥怎样建立，是相关但不同的问题。</p>
+<h2>6. rtcp-mux 省端口，不取消 SRTCP</h2>
+<p>当双方协商使用 rtcp-mux，SRTP 与 SRTCP 可以在同一端口上传输。发送端仍分别生成受保护的媒体包和控制包；接收端先区分它们，再按各自上下文完成安全处理。</p>
+<figure><figcaption>字段与职责示意，非抓包，不按字节长度比例绘制</figcaption><pre><code>同一 UDP 端口收到数据
+        ↓ 按约定区分类型
+   媒体 SRTP       控制 SRTCP
+        ↓              ↓
+   SRTP 接收状态   SRTCP 接收状态
+        ↓              ↓
+   已验证音频      已验证控制信息</code></pre></figure>
+<p>这里不是实现分流器的伪代码，也不表示任意 PT 值都可用于 mux。重点是：端口共用不改变包的职责、索引或保护要求。没有必要为了保护 RTCP 再把它包进 DTLS application data。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-4">RFC 5761 §4</a>、<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-7">§7</a>。</p>
+<h2>7. 用三种“无音频”现象练排查</h2>
+<h3>场景 A：ICE 成功，也看到 PT=111，但没有声音</h3>
+<p>这些证据只能分别支持“选过路径”和“某个包的头可解析”，还不能证明 DTLS/密钥建立、profile 匹配、鉴别与防重放通过，更不能证明负载可解码。</p>
+<p>下一步应分层核对：最终的 SRTP profile 与收发方向；接收安全检查是否通过；通过后这个 PT 在当前 SDP 中映射什么编码；最后才看解码和播放期限。不要先把密文字节直接送 Opus 解码器，也不要把每次鉴别失败都归因于 NAT。</p>
+<h3>场景 B：包到得及时，头也合理，但鉴别失败</h3>
+<p>处理是丢弃，而不是为了避免断音继续播放。候选原因包括不匹配的密钥方向、profile、上下文或包被修改；单凭失败结果，不能断言其中哪一个就是真因。PLC 能补偿缺失音频，但不能使未鉴别数据变得可信。</p>
+<h3>场景 C：安全检查通过，但包晚于播放期限</h3>
+<p>安全接受不保证及时播放。这里应检查媒体时序与缓冲，而不是把 SRTP 的重放窗口当作“再等 100 毫秒”的开关。已经播放过的合法包副本也不能因为想补声音而再放一次。</p>
+<p>这三个场景分别联系 <a href="0010-srtp-secure-receive.html">0010 安全接收</a>、<a href="0011-roc-replay-window.html">0011 索引与窗口</a>、<a href="0006-audio-timing-recovery.html">0006 播放时序</a>，不要用某一层的成功替代其他层的证据。</p>
+<h2>8. 动手做一张纸面包识别卡</h2>
+<p>下面是人工写出的字段卡，不是合法的完整十六进制报文，也不是抓包。不能拿来做真实解密测试。请在纸上给每行标三类信息：能否直接看见、是否受所选方案保护、还缺什么证据才能使用。</p>
+<pre><code>给定：已协商加密与鉴别，CC=0、X=0、P=0
+当前 SDP：a=rtpmap:111 opus/48000/2
+
+卡 A：SRTP，经典 AES-CM + HMAC-SHA1
+PT=111，seq=40210，timestamp=960000
+SSRC=0x13572468
+payload=&lt;密文，真实字节省略&gt;
+tag=&lt;鉴别字节省略，不是有效 tag&gt;
+
+卡 B：SRTCP，经典方案，RTCP 首包为 RR
+可见发送者 SSRC=0x13572468
+E=1，SRTCP index=700
+报告内容=&lt;密文，真实字节省略&gt;
+tag=&lt;鉴别字节省略，不是有效 tag&gt;</code></pre>
+<p>为 A 画一条从“读头找上下文”到“按时播放”的职责线。为 B 写出它使用哪一种索引与接收历史。不要因为两张卡 SSRC 相同就把它们的计数合并，也不要因为 tag 有个占位文字就认定验证成功。</p>
+<h2>9. 完整自测：先写答案，再展开</h2>
+<ol><li>A 的 PT、seq、timestamp、SSRC 可见，是否说明负载没有加密？可见的 PT=111 能否独立证明音频已通过安全检查？</li><li>在本例已经协商的映射下，PT=111 是什么编码？没有这份映射时，能否单看 111 永久认定是 Opus？</li><li>A 没有 CSRC、扩展和填充，最小头多长？如果换成 X=1，能否仍直接把第 13 字节当作音频起点？</li><li>攻击者把 A 的 PT 改成 0，保留旧 tag。可以因为负载没改就直接按 PCMU 播放吗？解释明文与鉴别的区别。</li><li>为什么不能把所有 SRTP 都画成“音频后面固定一个 HMAC tag”？AES-GCM 的 AD 与 AEAD tag 各解决什么问题？MKI 是密钥本身吗？</li><li>B 的 index=700 是否应改成 A 的 ROC×65536+40210？E=0 是否就允许不验证控制信息？rtcp-mux 是否允许 A、B 共用一份防重放历史？</li><li>ICE 成功、头解析正确、鉴别失败。现在应播放、丢弃还是增加抖动缓冲？列出两个应核对的配置项，不武断认定唯一故障原因。</li><li>迟到包在重放窗口内、此前未收、鉴别通过，却已超过播放期限。它可能通过安全检查吗？一定能播放吗？重放窗口是以播放毫秒数计量的吗？</li></ol>
+<details class="answer-section"><summary>完成全部题后，展开参考答案</summary>
+<ol><li>不说明。常见 SRTP 留下可读的 RTP 基本头，同时加密负载。可解析不等于鉴别成功。</li><li>在给定映射下是 Opus。没有当前协商映射，不能把动态 PT 111 当成固定全球含义。</li><li>最小 12 字节。X=1 表示还有报头扩展，不能盲用固定负载起点，还要处理真实头结构。</li><li>不能。明文允许读取，不允许绕过鉴别任意修改；修改受保护头会使原鉴别材料不再匹配。</li><li>算法、tag 与可选字段由具体方案和配置决定。AES-GCM 用 AD 鉴别未加密的头，用其 AEAD tag 验证受保护数据，不是无条件再加旧式 HMAC。MKI 是主密钥标识，不是密钥。</li><li>都不是。SRTCP 使用自己显式的 index 和独立接收历史；E=0 不取消鉴别；mux 不合并安全状态。</li><li>丢弃，不交给解码器。核对收发方向对应的密钥、最终 profile 或安全上下文，增加缓冲不能修复鉴别失败。</li><li>可以通过安全检查，但不保证及时播放；错过期限通常丢弃。重放窗口记录包索引与历史，不是抖动缓冲的等待时间。</li></ol>
+<p>纸面识别卡的职责线：读 A 的头寻找上下文，按已协商方案验证并完成安全接收，通过后按 PT 映射解释解密后的压缩媒体，再交媒体时序与解码播放处理。这里是职责顺序，不要求所有实现内部步骤完全一样；B 则按 SRTCP 自己的 index 与接收历史处理，不能共用 A 的 ROC 推算。</p>
+</details>
+<h2>10. 本课小结与间隔复习</h2>
+<ul><li>基本头通常可见，仍可受鉴别保护；看见头不能推出能解音频。</li><li>先查 profile 再解释包布局。扩展加密、MKI、tag 不能一概而论。</li><li>RTCP 用 SRTCP 保护，有自己的 index 和防重放历史。mux 只改变端口复用。</li><li>路径成功、包安全接受、正确解码、及时播放，是不同的证据。</li></ul>
+<p>明天遮住图，重新画出经典 SRTP 与经典 SRTCP 的字段顺序，再做第 4、6、8 题。本课已提供不等于你已掌握；可以一次提交自测答案，再集中讨论错题，不必逐题等待聊天。</p>
+<h2>主要来源与继续阅读</h2>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.1">RFC 3711 §3.1</a> 与 <a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.4">§3.4</a>，对照本课两种包的边界；再用 <a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-8.2">RFC 7714 §8.2</a> 看 AEAD 的差异，不必先读所有算法推导。</p>
+<p>其余核对来源：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.2">RFC 3711 §3.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3">§3.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-4">§4</a>；<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-7.1">RFC 7714 §7.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-8.3">§8.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc7714.html#section-9.2">§9.2</a>；<a href="https://www.rfc-editor.org/rfc/rfc6904.html#section-3">RFC 6904 §3–§4</a>；<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-7">RFC 5761 §7</a>；<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>。</p>
+<p>上一课：<a href="0011-roc-replay-window.html">序号回绕、ROC 与防重放窗口</a>。密钥回顾：<a href="0009-dtls-srtp-keys.html">0009 DTLS-SRTP</a>。基础参考：<a href="../reference/ice-flow.html">ICE 流程</a>。</p>
+<nav class="next"><a href="0011-roc-replay-window.html">上一课</a><a href="../index.html">课程目录</a></nav><footer>2026-11-18（Asia/Tokyo）· 协议学习。字段及流程是教学示意，非抓包；不包含 rustrtc API 或运行结果。</footer></body></html>

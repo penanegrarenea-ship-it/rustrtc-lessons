@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 11 课：序号回绕、ROC 与防重放窗口</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets">
+<header class="course">rustrtc 学习 · 第 11 课 · 协议基础 · <a href="0010-srtp-secure-receive.html">上一课</a></header>
+<h1>序号回绕、ROC 与防重放窗口</h1>
+<p>这是上一轮问答的完整归档。目标是把 RTP 的小序号、SRTP 的包索引和防重放窗口连起来，不实现完整接收算法。所有编号都是教学示意，不是抓包；以下判断限定同一 SSRC、同一安全上下文，且启用了相应鉴别与防重放保护。</p>
+<h2>1. 65535 后面的 0，不代表通话重开</h2>
+<p>RTP 的 sequence number 只有 16 位。每发送一个 RTP 数据包，序号加一，经过 65535 后回到 0。</p>
+<pre><code>RTP 序号：65534 → 65535 → 0 → 1</code></pre>
+<p>仅凭这个 0，不能判定包是重放，也不能判定整通会话重新开始。不同 SSRC 的序号各自独立，不能放在一条数轴上比较。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>。</p>
+<h2>2. ROC 加上序号，区分不同圈</h2>
+<p>SRTP 维护 ROC，即 rollover counter，回绕计数器。在基本 SRTP 格式中，ROC 通常不是每包显式携带的字段，接收方根据序号和已有状态估算包属于哪一圈。</p>
+<pre><code>包索引 = ROC × 65536 + RTP 序号
+
+ROC=0，seq=65535 → 索引 65535
+ROC=1，seq=0     → 索引 65536
+ROC=1，seq=1     → 索引 65537
+ROC=1，seq=2     → 索引 65538</code></pre>
+<p>因此，上一圈的 seq=0 与新一圈的 seq=0，不是同一个包索引。这里只练过几个基础例子，不要求凭记忆写出所有初始化和边界处理。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.1">RFC 3711 §3.3.1</a>。</p>
+<h2>3. 回绕后迟到的大序号，可能属于上一圈</h2>
+<p>假设同一来源的包按下面顺序到达，开始时处在 ROC=0：</p>
+<pre><code>先到：65535 → 0 → 1
+晚到：65534
+
+65535：ROC=0，索引 65535
+0：    ROC=1，索引 65536
+1：    ROC=1，索引 65537
+65534：上一圈 ROC=0，索引 65534</code></pre>
+<p>不能把所有后到的包都套用当前 ROC=1，否则会错误地把迟到包解释成很远以后的包。实际估算要结合本地 ROC 和已维护的最高序号等状态，规范给出的办法会在相邻圈中选择合适的估计值。</p>
+<p><strong>先推算，不等于立即信任。</strong> 估算值用于本次安全处理；通过要求的鉴别后，才按规则更新 ROC、最高序号和接收历史。不能让一个未经验证、声称“来自未来”的包任意推动状态或窗口。</p>
+<p>这也不表示每个校验通过的旧包都会推进 ROC。上一圈迟到包通过处理时，不会把当前 ROC 倒退回去。本课不展开完整伪代码。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3">RFC 3711 §3.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.1">§3.3.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3711.html#appendix-A">Appendix A</a>。不要与 RFC 3550 的 Appendix A.1 混为同一个算法。</p>
+<h2>4. 算出索引，还要过防重放窗口</h2>
+<p>防重放不是“永久记住所有见过的 16 位序号”。接收方结合包索引、已鉴别的接收记录和一个有限的滑动窗口判断：</p>
+<ul><li>窗口内、此前已经成功接收的包：重复包，拒绝。</li><li>窗口内、此前未接收的包：可以继续接受检查，但仍须满足鉴别等条件。</li><li>窗口之外太旧的包：即使首次到达，也不能仅凭“没见过”就接受。</li><li>比当前窗口更靠前的新包：不因“在现有范围之外”一概拒绝；通过安全检查后可让窗口前移。</li></ul>
+<p>最后一点的“更靠前”指索引更大，不是更早到达。“窗口外旧包被拒绝”不能缩写成“所有窗口外的包都拒绝”。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.2">RFC 3711 §3.3.2</a>。</p>
+<h2>5. 把三个包放进同一个窗口</h2>
+<p>假设当前教学窗口恰好覆盖索引 1000–1063，1050 已成功接收，1049 尚未接收。以下三个包的鉴别都能通过：</p>
+<div class="table-scroll"><table><thead><tr><th scope="col">到来的索引</th><th scope="col">相对窗口的位置</th><th scope="col">接收历史</th><th scope="col">判断</th></tr></thead><tbody><tr><td>1050</td><td>窗口内</td><td>已接收</td><td>拒绝重复副本</td></tr><tr><td>1049</td><td>窗口内</td><td>未接收</td><td>可通过防重放检查</td></tr><tr><td>999</td><td>太旧，在窗口外</td><td>即使没收过</td><td>拒绝过旧包</td></tr></tbody></table></div>
+<p>这是一个假设窗口，用于分类，不声称某个库配置就是这个范围。通过防重放检查也不保证赶上播放，抖动缓冲区仍要看播放期限。</p>
+<pre><code>包索引与窗口：解决安全接收历史
+播放时序与缓冲：解决什么时候播放
+
+安全上通过 ≠ 播放上来得及</code></pre>
+<h2>6. 合上笔记再做一遍</h2>
+<ol><li>同一来源连续收到 65534、65535、0，能只因 0 曾经出现过就拒绝吗？</li><li>ROC=1、seq=1 的索引是多少？ROC=1、seq=2 呢？请写出乘加式。</li><li>已进入新一圈后，上一例迟到的 65534 用哪一圈 ROC？它若此前已收过，还能接受吗？</li><li>在上述 1000–1063 窗口里，为什么只有 1049 通过？首次到达是否足够？</li><li>一个伪造包声称索引很大，能在鉴别前把接收历史提交成“已接收”吗？</li></ol>
+<details class="answer-section"><summary>完成全部题后，展开参考答案</summary>
+<ol><li>不能。16 位序号会正常回绕，要结合包索引与安全检查判断。</li><li>1×65536+1=65537；1×65536+2=65538。</li><li>上一圈 ROC=0；如果此前已成功接收，则仍应拒绝重复副本。</li><li>1049 在窗口内且未接收，1050 重复，999 太旧。首次到达不能豁免窗口与鉴别要求。</li><li>不能把未鉴别数据提交为有效接收历史。估算或预检查不等于成功接收后的状态更新。</li></ol>
+</details>
+<h2>复习与阅读</h2>
+<p>明天不看公式先重算 ROC=1、seq=1，再画一次 1000–1063 的窗口。用乘加式检查进位，不要用记住答案代替理解；会做纸面计算也不等于已实现 ROC。</p>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.1">RFC 3711 §3.3.1–§3.3.2</a>，先读索引关系和窗口判断，不急着实现密码处理。可以继续针对某个边界追问。</p>
+<p>上一课：<a href="0010-srtp-secure-receive.html">SRTP 安全接收</a>。下一课：<a href="0012-srtp-packet-srtcp.html">看懂 SRTP 包与 SRTCP</a>。播放回顾：<a href="0006-audio-timing-recovery.html">音频时序</a>。</p>
+<nav class="next"><a href="0010-srtp-secure-receive.html">上一课</a><a href="../index.html">课程目录</a><a href="0012-srtp-packet-srtcp.html">下一课</a></nav><footer>2026-11-18（Asia/Tokyo）· 协议学习。字段及流程是教学示意，非抓包；不包含 rustrtc API 或运行结果。</footer></body></html>
