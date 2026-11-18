@@ -1,0 +1,113 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 13 课：从 SDP 判断媒体连接与密钥方式</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第 13 课 · 完整课程 · 建议 20–30 分钟</header><main><h1>从 SDP 判断媒体连接与密钥方式</h1><nav aria-label="本课目录"><details><summary>本课目录</summary><ul><li><a href="#section-1">1. 先复习，再把两个维度分开</a></li><li><a href="#section-2">2. 示例 A：普通 RTP，练习分清地址与可达</a></li><li><a href="#section-3">3. 示例 B：SDES-SRTP，材料在 SDP 中</a></li><li><a href="#section-4">4. 示例 C：DTLS-SRTP 加 ICE，不要混淆三种材料</a></li><li><a href="#section-5">5. 示例 D：还没有 candidate，不等于没有 ICE</a></li><li><a href="#section-6">6. 单份 offer 的证据边界与判读顺序</a></li><li><a href="#section-7">7. 三个分析场景：下一步查什么</a></li><li><a href="#section-8">8. 纸面练习：做一张媒体判读卡</a></li><li><a href="#section-9">9. 完整自测：整组作答后再对答案</a></li><li><a href="#section-10">10. 复习与主要来源</a></li></ul></details></nav>
+<p>先看一段教学截取。它不是完整 SDP，也不是抓包；尖括号里是刻意无效的占位值，不是证书指纹或可用凭证：</p>
+<pre><code>m=audio 50000 UDP/TLS/RTP/SAVP 111
+c=IN IP4 203.0.113.10
+a=rtpmap:111 opus/48000/2
+a=fingerprint:sha-256 &lt;NOT_A_REAL_FINGERPRINT&gt;
+a=setup:actpass
+a=ice-ufrag:&lt;ICE_UFRAG_A&gt;
+a=ice-pwd:&lt;ICE_PWD_A&gt;
+a=ice-options:ice2
+a=candidate:1 1 UDP 2130706431 203.0.113.10 50000 typ host
+a=rtcp-mux</code></pre>
+<p>你现在要回答的不是“这通电话已经通了吗”，而是“这端提议怎样找媒体路径、怎样建立媒体密钥、还缺哪些证据”。本节将这个截取称为示例 C；后面还会对照 A、B、D。建议用 20–30 分钟阅读并完成整组练习，不需要逐题等聊天回复。</p>
+<p><strong>本课目标：</strong>给音频 SDP 写出一张判读卡，分清连接方式、密钥方式、协商进度与排错下一步。只讨论媒体，不教 SIP 信令流程，不运行代码，不提供 rustrtc API 映射，也不承诺库或浏览器支持某种组合。所有地址都是文档示例地址，所有片段均经过删减，不能复制部署；未展示的会话级字段、其他属性或候选，不能擅自当作不存在。</p>
+<h2 id="section-1">1. 先复习，再把两个维度分开</h2>
+<p>先自己回忆第 12 课的三个问题：看得见 RTP 头就说明音频没加密吗？校验失败的包能为了避免断音播放吗？同一个端口上的 SRTP 与 SRTCP 能共用同一份重放历史吗？本课不假定你已经答过或掌握了这些内容，末尾会给复习答案。</p>
+<p>这里借用 Connectivity 与 Keying 两个英文词作为<strong>概念标签</strong>，不是某个库的枚举赋值说明。</p>
+<ul><li>Connectivity 问“媒体往哪里走，怎样确认路径”：使用 ICE 时收集、交换并检查候选对；不用 ICE 时从协商的 SDP 地址与端口等信息开始处理媒体路径。</li><li>Keying 问“如果要用 SRTP，保护材料从哪里来”：SDES 在受保护的 SDP 中传递材料；DTLS-SRTP 在媒体路径上用 DTLS 建立材料；普通纯 RTP 分支不建立 SRTP 密钥。</li></ul>
+<pre><code>同一条音频流，分别填两格
+
+路径：ICE / 不使用 ICE / 证据不足
+密钥：无 SRTP / SDES / DTLS-SRTP / 证据不足
+
+路径可达 ≠ 密钥已建立 ≠ 音频可播放</code></pre>
+<p>两个问题独立，不等于任意软件支持所有组合。ICE 不负责加密；不用 ICE 也不等于不能做 DTLS-SRTP。RFC 5763 甚至分别讨论了 ICE 交互和无 ICE 时的处理。这里不把 NAT、latching 或对端具体行为从一行 SDP 中猜出来。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2">RFC 8445 §2</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-6.7.1">RFC 5763 §6.7.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-6.7.2">§6.7.2</a>。</p>
+<h2 id="section-2">2. 示例 A：普通 RTP，练习分清地址与可达</h2>
+<p>教学媒体级截取，不是完整 offer。本例另行假设：实际完整描述与已知应用约定都不使用 ICE，也没有额外媒体保护；不是因为这几行没写候选就下结论。</p>
+<pre><code>m=audio 40000 RTP/AVP 0
+c=IN IP4 198.51.100.20
+a=rtpmap:0 PCMU/8000
+a=sendrecv</code></pre>
+<p><code>m=</code> 的几个位置分别是音频、端口 40000、协议标识 RTP/AVP、负载类型 0。<code>c=</code> 提供连接地址。当前映射把 PT 0 解释为 PCMU；40000 不是 PT。</p>
+<p>在这个普通单播例子中，描述者给出自己用于接收该媒体的地址信息。不使用 ICE 时，应用依据协商后的 SDP 等信息确定媒体目标；不能把“写有一个地址”说成已经穿过 NAT 或防火墙。反向媒体要看另一端的描述，不能把双方目标都设成同一个单方地址。</p>
+<p>本例没有 SRTP 密钥建立阶段，正常负载按普通 RTP 处理。但 RTP/AVP 这几个字并不能证明网络上绝对没有 VPN 等其他层的保护。本课只判断是否采用这里的 SRTP 分支。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-5.7">RFC 8866 §5.7</a>、<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-5.14">§5.14</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-5.1">RFC 3264 §5.1</a>。</p>
+<h2 id="section-3">3. 示例 B：SDES-SRTP，材料在 SDP 中</h2>
+<p>教学媒体级截取。本例同样假设完整描述与应用约定不使用 ICE。下面的 inline 值明确不是 Base64，也不是主密钥，整个 crypto 属性不能用于协商或部署：</p>
+<pre><code>m=audio 40002 RTP/SAVP 0
+c=IN IP4 198.51.100.20
+a=rtpmap:0 PCMU/8000
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:&lt;NOT_BASE64_NOT_A_KEY&gt;
+a=sendrecv</code></pre>
+<p><code>RTP/SAVP</code> 表明使用安全 RTP profile，但单靠这个协议名字不能确定密钥如何建立。本例的 <code>a=crypto</code> 才给出 SDES 线索：1 是这个 crypto 属性的标签，不是 PT；后面是密码套件与 key 参数。真实 inline 携带的是主密钥与盐的拼接编码，不是只发一个不敏感的编号。Base64 是编码，不是加密。</p>
+<p>真实 SDES SDP 含有敏感材料，必须保护传递它的消息，兼顾认证、完整性与保密性；不要把生产 inline 值发到公开课程、截图或日志。本课故意使用不可用占位值，不示范真实密钥。</p>
+<p>在普通 offer/answer 用法中，answer 接受一个提供的 crypto 选项，并带上 answerer 自己发送方向的材料。A 的 offer 材料用于 A 发送，B 的 answer 材料用于 B 发送，不应照抄成同一把发送密钥。也不要因没看见 DTLS 就把 SDES 呼叫判为握手失败。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a>、<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-5.1.2">§5.1.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-6.1">§6.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-8.3">§8.3</a>。</p>
+<h2 id="section-4">4. 示例 C：DTLS-SRTP 加 ICE，不要混淆三种材料</h2>
+<p>回到开头的示例 C。它只展示一条 candidate，省略其他会话级内容、候选和 RTCP 兼容细节；不能据此检查整个 offer 是否完整。</p>
+<p><code>UDP/TLS/RTP/SAVP</code> 是 DTLS-SRTP 的 UDP 协议标识之一。实际 SDP 也会用 <code>UDP/TLS/RTP/SAVPF</code>；这里不展开反馈 profile 差异，不能把这个差异当作是否采用 ICE 的判断依据。</p>
+<ul><li><code>fingerprint</code> 是本端证书 DER 的哈希承诺，不是 SRTP 对称密钥，也不是 STUN FINGERPRINT。</li><li><code>setup:actpass</code> 是初始 offer 中给 DTLS 角色留出选择。若 B 的 answer 为 active，则 B 发起 ClientHello，A 被动应答；不能从单独的 actpass 就宣布 A 已经是 client。</li><li><code>ice-ufrag</code> 与 <code>ice-pwd</code> 用于 ICE 检查的凭证与消息完整性，不是 SRTP 的加密密钥。</li><li><code>candidate</code> 提供可尝试的路径信息。出现 host 候选不保证它能通，更不能证明它已经被提名。</li><li><code>rtcp-mux</code> 在 offer 中是请求共用 RTP/RTCP 端口，仍须结合 answer 确认。</li></ul>
+<figure><figcaption>字段与职责示意，非抓包，不按字节长度比例绘制</figcaption><pre><code>可信 SDP：给出预期证书指纹
+                ↓
+ICE 检查：找出可用媒体路径
+                ↓
+媒体路径上的 DTLS：角色、证书核对、建立材料
+                ↓
+SRTP / SRTCP：按各自上下文保护媒体和控制信息</code></pre></figure>
+<p>这是职责关系，不是声称所有候选收集、信令与握手事件必须严格串行。DTLS 实际收到的证书要与<strong>对端</strong> SDP 的指纹核对，失败不能擅自退成明文。DTLS-SRTP 最终媒体保护配置看 <code>use_srtp</code> 协商结果，不直接由 DTLS 密码套件推断。</p>
+<p>还有两个边界：SDP 的 <code>TLS</code> 字样不表示音频都被封装在 DTLS application data 中；证书指纹能匹配，也不自动证明某家现实身份，仍依赖信令等信任前提。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-8">RFC 5764 §8</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1">§4.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-5.1">§5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-5">RFC 5763 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-5">RFC 8122 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-6.2">§6.2</a>。</p>
+<h2 id="section-5">5. 示例 D：还没有 candidate，不等于没有 ICE</h2>
+<p>教学早期 offer 截取，含无效凭证与指纹占位，不是可直接提交的 SDP。这里刻意展示零候选的初始状态：</p>
+<pre><code>m=audio 9 UDP/TLS/RTP/SAVP 111
+c=IN IP4 0.0.0.0
+a=rtpmap:111 opus/48000/2
+a=ice-ufrag:&lt;ICE_UFRAG_D&gt;
+a=ice-pwd:&lt;ICE_PWD_D&gt;
+a=ice-options:ice2 trickle
+a=fingerprint:sha-256 &lt;NOT_A_REAL_FINGERPRINT&gt;
+a=setup:actpass</code></pre>
+<p>没有 candidate 行，不能直接归到示例 A。这里已有 ICE 凭证和扩展线索，初始描述可以暂时没有候选，后续再增量传递。<code>0.0.0.0</code> 加端口 9 在这个 ICE 场景中是占位，不是让你向那个地址和端口发送音频。</p>
+<p>Trickle 支持与实际使用还要看另一端及应用后续交换。它不是“每来一个候选都必须重做一次完整 offer/answer”，本课也不教特定信令如何运送增量候选。不要把候选仍在收集、完整日志没截到，或字段在会话级，误读成对端彻底不支持 ICE。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8838.html#section-3">RFC 8838 §3–§4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.3.1">RFC 8839 §4.3.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.2.5">§4.2.5</a>。ICE 核心与 SDP 语法分属 RFC 8445、8839，不把 SDP 属性语法全归给 RFC 8445。</p>
+<h2 id="section-6">6. 单份 offer 的证据边界与判读顺序</h2>
+<p>先确定你拿到的是完整会话描述还是几行截取，是 offer 还是 answer，再找当前 <code>m=audio</code> 对应的属性。<code>c=</code> 可在会话级或媒体级，媒体级值覆盖相应默认值。ICE ufrag/pwd 和证书 fingerprint 也有作用域规则，不能只搜这一小段有没有某行；<code>a=crypto</code> 则只能位于媒体级。</p>
+<p>一份 offer 能告诉你“这一端提议了什么”。它不能单独证明对端接受了某种编码、密钥方式、DTLS 角色或 rtcp-mux，更不能证明路径可达、指纹匹配与音频播放成功。</p>
+<figure><figcaption>字段与职责示意，非抓包，不按字节长度比例绘制</figcaption><pre><code>① 找到完整范围、offer/answer、对应音频段
+        ↓
+② 读 m= 协议、c= 地址、PT/rtpmap
+        ↓
+③ 独立判断路径线索与密钥线索
+        ↓
+④ 对照 answer 与实际检查/握手结果
+        ↓
+⑤ 再看 SRTP 接收、编码与播放</code></pre></figure>
+<p>具体到本课四例：A 是普通 RTP 的声明；B 是 SDES-SRTP 的声明；C 是 DTLS-SRTP 加 ICE 的声明；D 是 DTLS-SRTP 加早期 ICE 的声明。这里的“声明”不等于双方已经成功协商。</p>
+<p>如果实际描述混合了不相容的协议标识与属性，或安全选项不完整，不要选一个自己喜欢的字段就强行继续。先检查是否看错作用域、截断了内容、处在能力声明或其他扩展上下文，再按真实协议和安全策略处理；不能把“不懂”自动变成“降级纯 RTP”。</p>
+<p>rtcp-mux 在普通 offer/answer 中需要双方接受；只见 offer 不算。普通应答中 <code>m=audio 0 ...</code> 通常表示拒绝该媒体流，不表示所有会话都断开，也不要与示例 D 的占位端口 9 混淆。本课不展开 BUNDLE 特例。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6">RFC 3264 §6</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">§6.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-7">§7</a>、<a href="https://www.rfc-editor.org/rfc/rfc8866.html#section-5.7">RFC 8866 §5.7</a>、<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.4">RFC 8839 §5.4</a>、<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-5">RFC 8122 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.1">RFC 5761 §5.1.1</a>。</p>
+<h2 id="section-7">7. 三个分析场景：下一步查什么</h2>
+<h3>场景一：RTP/SAVP 加 crypto，没有 DTLS 日志</h3>
+<p>先识别是否是类似 B 的 SDES 路线。若双方最终接受了 SDES，不出现 DTLS 握手本身不构成失败证据。应检查接受的 crypto 标签/套件、两个发送方向的材料与有效期，以及接收鉴别结果。分享诊断材料时删掉真实 inline 密钥；不要为了求助把它公开。</p>
+<h3>场景二：DTLS-SRTP offer 写了 host candidate，但没有音频</h3>
+<p>先要 answer 和后续候选/检查结果，而不是宣布 ICE 已成功。若没有可用媒体路径，先看地址、端口、防火墙与 ICE 检查；路径可用后，再核对 DTLS 角色、证书指纹、握手与 SRTP profile。最后才排查当前 PT 映射、方向、解码和播放期限。列出顺序是为了定位，不是承诺“只可能有一个故障”。</p>
+<h3>场景三：ICE 检查通过，证书指纹却不匹配</h3>
+<p>路径问题与认证问题已经分开。不能用“UDP 已经通了”绕过指纹不匹配，也不能把未经认证的数据当作可信音频继续播放。先核对是否用错对端/会话的 SDP、证书是否被更换、信令是否可信；按协议终止不匹配的安全连接，不擅自改发纯 RTP。</p>
+<p>三个场景都需要协商与运行证据。本课没有提供真实日志，列出的原因是待核对项，不是已经测得的诊断结论。</p>
+<h2 id="section-8">8. 纸面练习：做一张媒体判读卡</h2>
+<p>不用抓包、不填真实秘密。对 A、B、C、D 各写五行：</p>
+<ul><li>看到的协议与当前 PT/编码是什么？</li><li>路径判断是 ICE、无 ICE，还是证据不足？依据是什么，哪些是题目另给的假设？</li><li>SRTP 密钥方式是什么？相关字段里哪个是指纹、哪个是 ICE 凭证、哪个在真实部署中携带密钥材料？</li><li>哪些只是 offer 提议，还必须等 answer 或实际检查？</li><li>如果没有音频，你下一步索要什么已脱敏的证据？</li></ul>
+<p>再把 C 想象成“不使用 ICE，但双方确实协商了可用的 DTLS-SRTP 媒体地址”。Keying 不会因此自动变成 SDES 或纯 RTP。请写一句理由，不要求给任何库配置代码。</p>
+<h2 id="section-9">9. 完整自测：整组作答后再对答案</h2>
+<ol><li>复习 0012：看得见 RTP 头是否等于负载未加密？校验失败能否播放？mux 后能否合并 SRTP/SRTCP 重放历史？</li><li>对 A，端口和 PT 分别是多少？为什么不能仅靠这份截取没写 candidate，就给任意真实通话下“无 ICE”结论？</li><li>对 B，crypto 后的 1 是 PT 吗？真实 inline 携带什么，为什么 Base64 不能让它安全公开？</li><li>对 C，fingerprint、ice-pwd、SRTP 发送密钥是同一份材料吗？只见 actpass 能知道谁发送 ClientHello 吗？若 B answer active 呢？</li><li>对 D，没有 candidate 能认定无 ICE 吗？应不应该把音频直接送到 0.0.0.0:9？还应补查哪些信息？</li><li>一份 offer 同时写了 DTLS-SRTP、Opus 与 rtcp-mux，是否足以证明对端都接受并且已经可播放？不用 ICE 是否必然不能用 DTLS-SRTP？</li><li>B 的 SDES 呼叫没有 DTLS 日志，C 的 DTLS 呼叫却指纹不匹配。这两种现象是否都应改发纯 RTP？分别说明下一步。</li><li>ICE 路径已可用，SRTP 接收鉴别失败，能否先增加抖动缓冲继续播放？列出两个应核对的安全上下文信息，并说明为什么不能从单份 offer 得出唯一故障原因。</li></ol>
+<details class="answer-section"><summary>完成全部题后，展开参考答案</summary>
+<ol><li>都不是。常见 SRTP 基本头可读而负载加密；鉴别失败丢弃；同端口不合并两类安全状态。</li><li>端口 40000、PT 0。A 的无 ICE 来自题目对完整描述和应用约定的假设；真实截取可能省掉会话级字段或后续候选。</li><li>1 是 crypto 标签。inline 携带主密钥和盐等材料的编码；Base64 不提供保密性，真实值不可公开。</li><li>不同。指纹用于证书绑定，ICE 凭证用于检查，SRTP 方向密钥来自相应建立过程。单看 actpass 不够；B answer active 时 B 发 ClientHello。</li><li>不能，也不应发到这个占位目标。查完整作用域、双方 ICE/Trickle 支持、后续候选与检查结果，不能把缺少候选直接等同无 ICE。</li><li>都不够。还要 answer 与实际路径、安全接收及播放证据；不用 ICE 不会自动排除 DTLS-SRTP，两维要分别判断。</li><li>都不应擅自降级。B 先核对实际 SDES 协商与收发材料；C 的安全连接应按不匹配处理，检查对端 SDP、证书和信任来源，不能绕过认证。</li><li>不能。可核对最终 SRTP profile、收发方向对应的密钥或索引/安全上下文；这些状态并不都在单份 offer 中，增加缓冲不能修复鉴别失败。</li></ol>
+<p>纸面卡的简要核对：A 无 ICE/无 SRTP 是本例完整上下文假设；B 无 ICE/SDES；C ICE/DTLS-SRTP；D 初始 ICE 线索仍存在/DTLS-SRTP。四例都不单独证明协商完成。C 改为无 ICE 时，变的是路径机制，不会凭空改变已经协商的密钥机制。</p>
+</details>
+<h2 id="section-10">10. 复习与主要来源</h2>
+<p>明天不看示例，只写出三种媒体路线各自最有用的判读线索，再重做第 4、5、6 题。可以一次发整组答案再集中讨论。课程已提供不等于已掌握，尤其不要把上一课的包布局与本课的协商字段混成一套密钥。</p>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a> 与 <a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-8">RFC 5764 §8</a>，对照 SDES 属性和 DTLS-SRTP 协议标识；ICE 的 SDP 补看 <a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.2.5">RFC 8839 §4.2.5</a> 与 <a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-4.3.1">§4.3.1</a>。</p>
+<p>其他关键来源已分散标在对应节：RFC 3264 的 offer/answer、RFC 8866 的字段范围、RFC 8122 的指纹与证书核对、RFC 5763 的角色与 ICE 交互、RFC 8445 的 ICE 主流程、RFC 8838 的零候选初始描述、RFC 5761 的 mux 协商。来源讨论不等于检查过任意库的实现。</p>
+<p>上一课：<a href="0012-srtp-packet-srtcp.html">看懂 SRTP 包与 SRTCP</a>。背景回顾：<a href="../reference/ice-flow.html">ICE 基础流程</a>、<a href="0007-sdp-directions.html">SDP 媒体方向</a>、<a href="0009-dtls-srtp-keys.html">DTLS-SRTP 密钥</a>。</p></main><nav class="next"><a href="0012-srtp-packet-srtcp.html">上一课：SRTP 包与 SRTCP</a><a href="../index.html">课程目录</a></nav><footer>2026-11-18（Asia/Tokyo）· 协议判读课。全部示例为教学截取，非抓包，不含可用密钥或 rustrtc 运行结论。</footer></body></html>
