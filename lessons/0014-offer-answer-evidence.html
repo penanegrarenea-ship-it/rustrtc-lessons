@@ -1,0 +1,116 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 14 课：对照 offer、answer 与运行证据</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第 14 课 · 完整课程 · 建议 20–30 分钟</header><main><h1>对照 offer、answer 与运行证据：连接到底成功到哪一步</h1><nav aria-label="本课目录"><details><summary>本课目录</summary><ul><li><a href="#section-1">1. 先把成对描述读完整</a></li><li><a href="#section-2">2. 同一个 B 可以只收音频，却主动握手</a></li><li><a href="#section-3">3. 给三类材料各写一句职责</a></li><li><a href="#section-4">4. answer 证明约定，不证明运行完成</a></li><li><a href="#section-5">5. 读一段明确模拟的事件序列</a></li><li><a href="#section-6">6. 带走这张证据判读表</a></li><li><a href="#section-7">7. 三种停住的位置，不能用同一招修</a></li><li><a href="#section-8">8. 纸面实践：给故障写一份五行结论</a></li><li><a href="#section-9">9. 八道自测</a></li><li><a href="#section-10">10. 间隔回忆与下一次讨论</a></li></ul></details></nav>
+<p>A 发出下面的 offer，B 用后面的 answer 接受这路音频。先不要说“已经通话成功”，先读出双方约定了什么。</p>
+<p>两份都是<strong>教学媒体段截取</strong>，不是完整 SDP、真实抓包或库输出。省略 <code>v=/o=/s=/t=</code> 等会话描述，但本题用到的媒体属性全部列出，不从会话级继承额外值。地址是文档地址。尖括号是刻意无效的指纹和 ICE 凭证占位，不能复制部署，没有真实秘密。只讨论普通单播的一路音频，不使用 BUNDLE，也不教 SIP 信令。</p>
+<p>A 的 offer：</p>
+<pre><code>m=audio 50000 UDP/TLS/RTP/SAVP 111 0
+c=IN IP4 203.0.113.10
+a=rtpmap:111 opus/48000/2
+a=rtpmap:0 PCMU/8000
+a=sendrecv
+a=rtcp-mux
+a=rtcp:50001 IN IP4 203.0.113.10
+a=setup:actpass
+a=fingerprint:sha-256 &lt;A_CERT_FINGERPRINT_INVALID&gt;
+a=ice-options:ice2
+a=ice-ufrag:&lt;A_UFRAG_INVALID&gt;
+a=ice-pwd:&lt;A_ICE_PWD_INVALID&gt;
+a=candidate:1 1 UDP 2130706431 203.0.113.10 50000 typ host
+a=candidate:1 2 UDP 2130706430 203.0.113.10 50001 typ host</code></pre>
+<p>B 的 answer：</p>
+<pre><code>m=audio 60000 UDP/TLS/RTP/SAVP 111
+c=IN IP4 198.51.100.20
+a=rtpmap:111 opus/48000/2
+a=recvonly
+a=rtcp-mux
+a=setup:active
+a=fingerprint:sha-256 &lt;B_CERT_FINGERPRINT_INVALID&gt;
+a=ice-options:ice2
+a=ice-ufrag:&lt;B_UFRAG_INVALID&gt;
+a=ice-pwd:&lt;B_ICE_PWD_INVALID&gt;
+a=candidate:1 1 UDP 2130706431 198.51.100.20 60000 typ host</code></pre>
+<p>本课建议 20–30 分钟。完成后，你能交出一张证据表，分别指出“已协商”“路径可用”“安全接收”和“实际播放”有哪些依据、还有哪些未知。无需新代码，也没有 rustrtc API、支持组合或实测承诺。可以整组答题后再集中讨论，不必逐题等回复。</p>
+<h2 id="section-1">1. 先把成对描述读完整</h2>
+<p>本例不是在 offer 中随便挑一个 codec。A 提供 PT 111 与 PT 0，B 的 answer 只保留 PT 111。因此，按这次协商，A 发给 B 的这路 RTP 用 PT 111，对应 <code>opus/48000/2</code>，不能因 offer 曾列 PCMU 就继续发 PT 0。</p>
+<p>协议标识是 <code>UDP/TLS/RTP/SAVP</code>，表示这里提议并接受的是 DTLS-SRTP 路线。50000 与 60000 是端口，不是 PT。<code>48000</code> 是 Opus 的 RTP 时间戳时钟频率，不是每秒 48000 个包。Opus SDP 的声道数字按规范写 2，不能由 <code>/2</code> 单独断言当前声音一定是立体声。</p>
+<p><strong>answer 不必一般性地只留一个 codec。</strong> 如果本例的 B 也愿意接收 PCMU，可以在合法的 answer 中保留 <code>111 0</code> 并给出相应映射。这个变体可接受多种格式，发送仍受本次方向和格式规则约束。不要把本例“只留 111”背成协议永远只能选一个，也不要把 PT 111 背成全球固定 Opus 编号。</p>
+<p>现在合上开头片段，写出协议、端口、PT、编码、RTP 时钟与声道信令六项，再对照。读题时漏掉协议或 PT，会让后面的安全排查失去对应对象。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-7">§7</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-8">RFC 5764 §8</a>、<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-7">RFC 7587 §7</a>、<a href="https://www.rfc-editor.org/rfc/rfc7587.html#section-6.1">§6.1</a>。</p>
+<h2 id="section-2">2. 同一个 B 可以只收音频，却主动握手</h2>
+<p>三个问题要分别回答。</p>
+<ul><li>RTP 媒体方向：A offer sendrecv，B answer recvonly。本例最终允许 A 向 B 发音频，B 不向 A 发这路 RTP 音频。</li><li>DTLS 角色：A offer actpass，B answer active。所以 B 是本次 DTLS client，由 B 发 ClientHello，A 是 DTLS server。</li><li>ICE 角色：controlling 与 controlled 决定检查提名职责，不能从 B 的 recvonly 或 setup:active 推出。要看实际确定的 ICE 角色及提名结果。</li></ul>
+<pre><code>A                         B
+音频 RTP       ────────→  recvonly
+DTLS 握手      ←───────→  active，先发 ClientHello
+RTCP 反馈      ←────────  仍可发接收报告
+ICE 检查       ←───────→  本题两端均为 full ICE</code></pre>
+<p>recvonly 不等于 B 所有 UDP 包都只能接收。它不禁止 B 发 STUN、DTLS 或 RTCP。反过来，看到 B 发了 ClientHello，也不能断言 B 在发送音频。</p>
+<p>双方都有 <code>rtcp-mux</code>，在本例的普通 offer/answer 中表示已协商 RTP 与 RTCP 共用端口。A 在初始 offer 还列出 RTCP 后备端口与 component 2 候选，供未接受 mux 的情况使用。B 接受 mux 后只给 component 1 候选，这不是漏写一半媒体。后面共用路径不等于 SRTP 与 SRTCP 取消各自保护。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-5.1">RFC 3264 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">§6.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-5">RFC 5763 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.1">RFC 5761 §5.1.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.3">§5.1.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc5761.html#section-7">§7</a>。</p>
+<h2 id="section-3">3. 给三类材料各写一句职责</h2>
+<p>本例 offer 的 fingerprint 属于 A 的证书，answer 的 fingerprint 属于 B 的证书。A 收到 B 的握手证书时，与 <strong>B 的 answer 指纹</strong>比较。B 收到 A 的证书时，与 A 的 offer 指纹比较。哈希对象是完整证书 DER，不是把本端指纹拿去检查所有来包。</p>
+<p>ICE 的 ufrag/pwd 是检查凭证。<code>ice-pwd</code> 用于 ICE 检查的消息完整性，不是“音频解密密码”。知道字段名字带 pwd，不等于知道它能用于哪层。</p>
+<p>DTLS-SRTP 通过握手建立材料，并按 exporter 输出提供各发送方向的 SRTP 主密钥与盐，再供媒体保护使用。这个过程没有把 fingerprint 或 ice-pwd 直接当 SRTP 方向密钥。本例 B 是 DTLS client、A 是 server，因此 A 发音频所用的方向材料是 server-write 对应的那一组，B 用对应接收材料处理。B 不发送 RTP 音频，不代表握手可以不建立必要的安全上下文，RTCP 仍有反向反馈。</p>
+<pre><code>ICE 凭证        → 检查路径的消息完整性
+SDP 证书指纹    → 绑定并核对对端实际证书
+DTLS exporter   → 两个方向的主密钥与盐材料
+SRTP / SRTCP    → 按各自上下文保护媒体与控制包</code></pre>
+<p>不匹配的证书要按协议终止安全媒体连接，不能因为 ICE 已通就继续。匹配也不独自证明某家现实身份，仍依赖可信的信令及认证前提。诊断中索要的是核对结果和方向关系，不是把真实密钥、ICE 密码或完整敏感 SDP 公开。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-5">RFC 8122 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8122.html#section-6.2">§6.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.4">RFC 8839 §5.4</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">RFC 5764 §4.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-8">RFC 5763 §8</a>。</p>
+<h2 id="section-4">4. answer 证明约定，不证明运行完成</h2>
+<p>看到 B 的 answer，可以读出本例接受 PT 111、B recvonly、mux 和 B active。还不能说双方实际证书匹配、ICE 选路成功或已经听见声音。</p>
+<p>候选出现，只证明有一项可尝试的地址声明。检查成功形成有效候选对，与最终提名、选定路径不是同一句话。应找出本次会话当前的 selected pair，而不是只拿“某条 STUN 成功”当最终选路证据。选定对形成后，ICE 数据使用选定对。</p>
+<p>不要据此反向发明“所有数据一定要等最终提名才允许发”的绝对规则。RFC 8445 允许在形成 selected pair 前在 valid pair 上发数据。本课的后续模拟为了读起来清楚，选了一条先选路、再握手的成功时间线，不表示所有实现必须按同一串内部调用执行。</p>
+<p>同样，DTLS 开始不等于 DTLS 完成；握手完成还要有正确的证书绑定和媒体上下文。最终 SRTP protection profile 看 <code>use_srtp</code> 协商，不能只看 DTLS 选了 AES-GCM 就认定音频也用 AES-GCM。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.2">RFC 8445 §2.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.3">§2.3</a>、<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-12.1">§12.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1">RFC 5764 §4.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-5.1">§5.1</a>。</p>
+<h2 id="section-5">5. 读一段明确模拟的事件序列</h2>
+<p>以下全部是<strong>模拟事件</strong>，不是实测日志、抓包、rustrtc 日志或性能数据。<code>+xxx ms</code> 是相对起点，不是钟表时刻。数值只是区分先后，没有延迟承诺。假设完整观测已确认 A controlling、B controlled，两端均为 full ICE，且属于同一次协商。</p>
+<pre><code>+000 ms  A 的候选已交给 B，B 的候选已交给 A
++030 ms  A/B 在相关候选对完成成功检查，得到 valid pair
++085 ms  该对完成提名，记录为当前 component 1 selected pair
+         A 203.0.113.10:50000 ↔ B 198.51.100.20:60000
++090 ms  B 按 active 角色发 ClientHello，A 应答
++105 ms  use_srtp 选中 SRTP_AES128_CM_HMAC_SHA1_80
++130 ms  两端实际证书分别与远端 SDP 指纹匹配
++150 ms  DTLS 握手完成
++152 ms  对应方向的媒体保护上下文已建立，不打印密钥
++170 ms  A 保护并发送一个音频 SRTP 包
++183 ms  B 的 UDP socket 收到该数据报
++184 ms  B 的 SRTP 接收安全处理通过，鉴别结果成功
++185 ms  媒体层接受 RTP：PT=111，seq=41000，timestamp=96000
++188 ms  解码器产生 PCM 音频帧
++230 ms  对应音频帧按播放调度送往输出设备</code></pre>
+<p><code>SRTP_AES128_CM_HMAC_SHA1_80</code> 是这里选用的一项标准 profile 名称，不是从 SDP 的 opus 或 DTLS 角色推断出来的。例子没有填写 MAC 值或真实密钥。</p>
+<p>网包当然先到 socket，再能被校验。这里的“媒体层接受 RTP”指通过安全处理后交给媒体层，不表示安全检查先于收网包。某些 RTP 头可在校验前被读到，那不构成包已被信任或应当解码的证据。</p>
+<p>分段写结论：到 +085 ms 支持路径已选定；到 +152 ms 支持本例的认证、握手和上下文已具备；到 +185 ms 支持该包被安全接收并交给媒体层；到 +188 ms 才多了解码证据。即使写入了输出设备，是否真的听到预期声音，还要结合音频内容、设备路由、音量与听测。阶段不能互相代替。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-6.7.1">RFC 5763 §6.7.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.1.2">RFC 5764 §4.1.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-5.1.2">§5.1.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>。</p>
+<h2 id="section-6">6. 带走这张证据判读表</h2>
+<p>把表中的“需要的证据”当作观测项目，不当作某个库的字段名或 API。每项还应关联相同会话、媒体段、方向与观测时段。不要把上一轮连接的成功拿来替这一轮背书。</p>
+<div class="table-scroll"><table><thead><tr><th scope="col">看到的证据</th><th scope="col">现在能说什么</th><th scope="col">还不能说什么</th></tr></thead><tbody><tr><td>成对 offer/answer 的对应音频段</td><td>本例的格式、方向、mux 与角色约定</td><td>路径或握手已经成功</td></tr><tr><td>candidate 已交换</td><td>对方有候选可尝试</td><td>已验证、已选中或永久可达</td></tr><tr><td>某候选对检查成功</td><td>当时存在有效检查结果</td><td>它一定就是最终 selected pair</td></tr><tr><td>当前 selected pair 记录</td><td>本次已选中的媒体路径</td><td>证书已认证或 SRTP 已通过</td></tr><tr><td>指纹匹配、握手完成、profile 与上下文已记录</td><td>本例安全建立证据具备</td><td>所有媒体包都会鉴别成功</td></tr><tr><td>B 的 SRTP 包鉴别并通过接收安全处理</td><td>这个包在相应上下文中被接受</td><td>编码负载一定有效或来得及播放</td></tr><tr><td>PT 映射正确并产生解码帧</td><td>该包已推进到解码阶段</td><td>输出设备一定播放了预期声音</td></tr><tr><td>播放调度、输出状态与实际听测</td><td>能判断具体的播放结果</td><td>未来永不丢包或断线</td></tr></tbody></table></div>
+<p>这张表是有意拆开的证据层级，不是全部实现的固定函数调用栈。RTP 能运输编码音频，不替你保证声音内容非静音。RTCP 的接收质量报告有助于观察，不等于解码器或扬声器的成功通知。</p>
+<p>依据：<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1">RFC 3550 §5.1</a>、<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1">§6.4.1</a>。</p>
+<h2 id="section-7">7. 三种停住的位置，不能用同一招修</h2>
+<h3>场景 P：路径尚未形成</h3>
+<p>模拟观测只到 candidate 交换。本次窗口里相关检查超时，未形成有效或 selected pair，未记录 DTLS 开始。此时不能说 Opus 出了问题，也不能由这段记录确定“永远不能直连”。</p>
+<p>下一步索要脱敏的双方描述、候选交换是否完整、检查目标与结果、提名及当前状态，再核对地址、端口、网络与候选来源。若信息不完整，先标“路径成功未证实”，不要把猜测写成 NAT 类型的结论。</p>
+<h3>场景 Q：路径可用，认证失败</h3>
+<p>模拟观测已有当前 selected pair，B 也发出 ClientHello。但 A 收到 B 的实际证书，与 B 的 answer 指纹不匹配。路径层成功不能覆盖这个安全失败。</p>
+<p>A 应按协议终止不匹配的安全媒体连接。核对是不是串了会话、用了旧 answer、对端换了证书或信令被修改。这里列的是待排查原因，不是已经测得的攻击结论。不能关掉验证、换用 ice-pwd 解密，或擅自改发纯 RTP。</p>
+<h3>场景 R：安全收包成功，仍然无声</h3>
+<p>模拟观测已有正确协商和安全上下文，B 接受了来自 A 的 SRTP 包，媒体层 PT=111。但还没有解码帧与播放记录。可以说“这个包通过安全接收”，不能说“B 已经听到”。</p>
+<p>接下来核对本次 PT 映射与负载是否一致、解码器输入和错误、是否产生音频帧、是否错过播放期限、输出设备与音量、发送内容是否本来静音。鉴别通过不负责验证编码语义。反过来，若后续某包鉴别失败，就应丢弃，不能靠加大缓冲绕过。</p>
+<p>三个场景都先写“已知证据”和“尚缺证据”。不要只写“链路或编码看看”，否则场景 Q 的安全建立层会被漏掉。</p>
+<h2 id="section-8">8. 纸面实践：给故障写一份五行结论</h2>
+<p>不用安装软件，不交真实凭证。对开头的成对片段和 P/Q/R 各做一张卡：</p>
+<ol><li>写协议、已接受 PT 与编码。写清你依据的是 offer、answer 还是两者。</li><li>分开写 RTP 方向、DTLS client/server、ICE controlling/controlled。未知就写未知，不强凑角色。</li><li>用一句话分别解释证书指纹、ICE 凭证、SRTP 方向密钥的用途。</li><li>引用一条模拟事件作为“目前成功到这里”的证据，再写一条不能推出的结论。</li><li>写下一项需要索要的具体观测。只交脱敏的必要字段和成功/失败结果，不导出真实密钥。</li></ol>
+<p>练习时把事件序列遮到 +085 ms，再遮到 +185 ms，各重写一次第 4 行。若结论完全没变，说明你仍把“路通”与“媒体可用”当作同一件事。</p>
+<h2 id="section-9">9. 八道自测</h2>
+<ol><li>开头两份 SDP 最终在 A→B 方向接受哪个 PT、哪种编码？协议、端口、48000 和 /2 各是什么？</li><li>B recvonly 却发 ClientHello，是否矛盾？B 还能否发 RTCP？能否据此把 B 定为 ICE controlling？</li><li>A 能否因为 offer 曾列 PT 0，就在这个 answer 后继续按 PCMU 发 PT 0？如果合法 answer 改为保留 111 和 0，是否协议仍强制只能有一个接受格式？</li><li>A 检查 B 的证书应该看哪份 SDP？能否用 ice-pwd 当媒体方向密钥？本例 A 发送方向对应 DTLS client-write 还是 server-write 材料？</li><li>只有 answer 和当前 selected pair 记录，能否宣称 DTLS-SRTP 已成功？如果另有 DTLS AES-GCM，但没看到 use_srtp 结果，能否直接宣布音频使用 GCM？</li><li>P、Q、R 各停在哪层？分别索要一项下一步证据。场景 Q 能否用扩大抖动缓冲绕过？</li><li>事件到 +185 ms 时能证明 B 已听见吗？可读的 PT/seq/timestamp 为什么不单独证明安全接收？</li><li>有人断言“所有媒体数据必须等最终提名之后才允许发送，而且所有库都按这张时间线逐行执行”。这句话哪里过强？再用不含秘密的三行诊断结论串起协商、路径、安全与播放。</li></ol>
+<details class="answer-section"><summary>完成全部题后，展开参考答案</summary>
+<ol><li>A→B 接受 PT111，映射 Opus/48000/2。协议 UDP/TLS/RTP/SAVP。A、B 描述端口分别 50000、60000，不是 PT。48000 是 RTP 时钟，2 是 Opus SDP 规定的声道信令，不单独证明当前立体声。</li><li>不矛盾。recvonly 限制这路 RTP 音频方向，不禁止 DTLS、STUN 或 RTCP。B 可发接收报告。DTLS active 不决定 ICE controlling。</li><li>不能。这个 answer 只列111，A 发送需遵守接受格式。变体可合法保留多个格式，不能把本例仅选一个泛化成永远唯一。</li><li>看 B 的 answer 指纹，核对 B 的实际证书。ice-pwd 不等于 SRTP 密钥。本例 B 是 DTLS client、A 是 server，所以 A 发送对应 server-write 材料，B 用对应接收材料。</li><li>都不能。answer 是约定，selected pair 是路径证据。还需证书绑定、握手完成、use_srtp 与上下文证据；不能只按 DTLS 密码套件推断 SRTP profile。</li><li>P 缺路径成功，查检查/提名与候选交换；Q 认证失败，核对 B answer 与实际证书和所属会话；R 已安全接受包但播放未证实，查解码帧与输出记录。缓冲不修复路径或认证，尤其不能绕过 Q，R 也不能仅凭加大缓冲就保证有声。</li><li>不能。还缺解码与播放结果。常见 SRTP 头可读，读到字段不等于鉴别通过或包已被安全接受，需相应上下文的处理结果。</li><li>RFC8445 允许形成 selected pair 前在 valid pair 上发数据，形成后使用选定对；不同实现还会并行、重试和省略不同日志。可写“answer 接受本例格式与方向；运行证据确认当前路径及证书、握手与媒体安全接收；解码和实际播放须有各自证据”，不能用一项替代全部。</li></ol>
+<p>纸面卡还应体现：单看 SDP 时 ICE 角色未给出；模拟事件另行明确 A controlling/B controlled。不要把后来给出的观测偷偷当作初始 SDP 自己证明的事实。</p>
+</details>
+<h2 id="section-10">10. 间隔回忆与下一次讨论</h2>
+<p>明天不看正文，重画“协商、路径、安全、播放”四项，再写各自的一条证据与一个不能推出的结论。随后把 B 的 answer 改为 sendrecv，并遮掉模拟事件里的 ICE 角色，重新判断音频方向与已知角色。不要默认旧结论照搬。</p>
+<p>提交时标明是“0014 第几题”或“P/Q/R 五行卡”。可以一次发整组答案与不确定处，再集中核对。新课保存不等于这些题已经答对，本节不记录未作答内容为掌握。</p>
+<p>主读 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a> 与 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-7">§7</a>，看双方格式和方向约束。安全证据对照 <a href="https://www.rfc-editor.org/rfc/rfc5763.html#section-5">RFC 5763 §5</a> 与 <a href="https://www.rfc-editor.org/rfc/rfc5764.html#section-4.2">RFC 5764 §4.2</a>。本课的播放排查表是基于协议边界的教学分析，不是声称 RFC 定义了设备级日志或库调用顺序。</p>
+<p>上一课：<a href="0013-sdp-connectivity-keying.html">0013 媒体路径与密钥方式</a>。复习：<a href="0007-sdp-directions.html">0007 媒体方向</a>、<a href="0009-dtls-srtp-keys.html">0009 DTLS-SRTP 密钥</a>、<a href="0010-srtp-secure-receive.html">0010 安全接收与播放期限</a>。</p></main><nav class="next"><a href="0013-sdp-connectivity-keying.html">上一课：媒体路径与密钥方式</a><a href="../index.html">课程目录</a></nav><footer>2026-11-19（Asia/Tokyo）· 教学截取与模拟事件，非抓包、实测或库日志，不含真实秘密。</footer></body></html>
