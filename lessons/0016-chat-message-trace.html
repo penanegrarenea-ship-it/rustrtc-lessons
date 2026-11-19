@@ -1,0 +1,221 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第 16 课：追踪一条聊天消息</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第 16 课 · 约 30 分钟 · <a href="../index.html">课程目录</a></header><main><h1>追踪一条聊天消息：浏览器→Rust→另一个浏览器</h1><nav aria-label="本课目录"><details><summary>本课目录</summary><ul><li><a href="#section-1">1. 先恢复可观察的两个页面</a></li><li><a href="#section-2">2. 先分清三处使用的“消息”</a></li><li><a href="#section-3">3. Alice 的发送按钮做了两件不同的事</a></li><li><a href="#section-4">4. login 给当前连接登记名字，不是握手消息</a></li><li><a href="#section-5">5. Rust 收到字节后，重新构造服务端消息</a></li><li><a href="#section-6">6. 一个接收任务，加上每个连接自己的转发任务</a></li><li><a href="#section-7">7. Bob 还要解析并显示，收到不等于显示</a></li><li><a href="#section-8">8. 源码追踪不是示例自带的逐步日志</a></li><li><a href="#section-9">9. 三种现象，先写缺哪条证据</a></li><li><a href="#section-10">10. 不改代码的实践：交一张消息字段卡</a></li><li><a href="#section-11">11. 八道自测</a></li><li><a href="#section-12">参考答案</a></li><li><a href="#section-13">12. 间隔复习与主读来源</a></li></ul></details></nav>
+<p>Alice 输入 <code>L16-R1-A1</code> 并点击 Send。本页出现 <code>Me: L16-R1-A1</code>，Bob 页出现 <code>Alice: L16-R1-A1</code>。<strong>后面这行里的 Alice 是谁加上的？Rust 转发的是原始输入、JSON，还是整个内部结构体？</strong></p>
+<p>本课用这三个问题读懂一条消息的完整处理路径。建议约 30 分钟：准备与读图 5 分钟，沿源码追踪 12 分钟，实践与自测 13 分钟。你最终交一张“同一条消息的字段变化与送达证据”卡，不改 Rust 程序，不跳到音频或重讲 ICE 建连。</p>
+<p>还没收到你的运行结果或第 15 课答案，所以这里不假定你已跑通。没跑通时可以先做纸面追踪，再按第 1 节操作。本课所有 <code>L16-...</code> 都是<strong>教学输入与预期推演，不是本轮实测记录或抓包</strong>。</p>
+<p>源码固定为 <code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。下文源码链接均含完整 SHA、文件和行号。此前真实验证是在 <strong>2026-11-19 JST 的云端 Linux、rustc 1.100.0、Chrome</strong>，未改示例，两个页面双向聊天成功。本课没有新跑程序，没有 Windows 实测，也没有取得成功截图。新标记与断开练习的结果等你实际观察，不能沿用旧验证冒充。</p>
+<h2 id="section-1">1. 先恢复可观察的两个页面</h2>
+<p>先纠正运行提示：本版本按钮叫 <strong>Connect</strong>，不是 Join。输入名字后点击 Connect，再用 Send 发消息。按钮原文见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L44-L46">examples/static/chat.html:44–46</a>。不需要另开前端服务，也不需要双击 HTML。</p>
+<p>如果上次服务仍在运行，直接打开两个 <code>http://127.0.0.1:3000/</code> 页面，不要再启动第二份占用 3000 的服务。如果已经停止，在你<strong>实际克隆的 rustrtc 仓库根目录</strong>执行下列 Windows 11 PowerShell 命令。还没有代码就先做 <a href="0015-datachannel-chat.html">0015 的新目录克隆步骤</a>，不要把课程仓库当源码仓库。</p>
+<pre><code>if (!(Test-Path .\Cargo.toml)) { throw "先进入 rustrtc 仓库根目录。" }
+Get-Item .\examples\datachannel_chat.rs, .\examples\static\chat.html
+$head = git rev-parse HEAD
+if ($LASTEXITCODE -ne 0) { throw "无法读取源码提交。" }
+if ($head -ne "f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa") {
+    throw "不是课程提交；先按0015准备独立目录，不要覆盖已有工作。"
+}
+rustc --version
+$env:RUST_LOG = "info"
+cargo run --example datachannel_chat</code></pre>
+<p>这些是给你本机运行的命令，不是已验证的 Windows 执行记录。保持启动终端运行。示例启动入口见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#L430-L440">README.md:430–440</a>；仓库相对静态目录和监听端口见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L46-L60">examples/datachannel_chat.rs:46–60</a>。编译失败或端口冲突先回 0015 排查，不用强制重置工程。</p>
+<p>先连接 Alice 页，等 Connected。再连接 Bob 页，也等 Connected。用不同名字只是为了分清接收者，不是新增账号认证步骤。此时先不发送消息，读完下面的字段变化再操作。</p>
+<h2 id="section-2">2. 先分清三处使用的“消息”</h2>
+<p>图 1 是本例的代码处理路径示意，不是日志，也没有表示各步耗时。前提是双方数据通道已打开，并已完成本例的应用名字登记。</p>
+<figure><figcaption>图 1 · 一条消息的应用处理路径。示意，非日志或实测时序。</figcaption><pre><code>Alice 页面
+  ① 输入文字，构造客户端 chat JSON
+  ② 调用通道发送，随后在本页追加 Me
+        ↓
+Rust：Alice 连接的接收任务
+  ③ 接收通道消息，解析 ClientMessage
+  ④ 用该连接登记的名字构造 ServerMessage
+  ⑤ 序列化，放进进程内广播
+        ↓
+Rust：Bob 连接的转发任务
+  ⑥ 按连接编号过滤，沿 Bob 的通道发送
+        ↓
+Bob 页面
+  ⑦ 收到消息，解析服务端 JSON
+  ⑧ 把 sender 与 content 显示为 Alice: ...</code></pre></figure>
+<p>先把各类数据归到对应位置：</p>
+<ul><li>HTTP 信令请求：<code>{"sdp":"此处省略描述"}</code> 发给 <code>/offer</code>。这是教学占位，不是可用 SDP。它负责这一例子的描述交换，不是聊天正文。</li><li>DataChannel 应用消息：例如 <code>{"type":"login","name":"Alice"}</code> 或 <code>{"type":"chat","content":"L16-R1-A1"}</code>。它们走已经建立的数据通道。</li><li>Rust 进程内广播项：有 <code>sender_id</code> 和 <code>text</code> 两个字段。<code>text</code> 保存序列化后的服务端 JSON。这个内部结构体本身不是直接发给浏览器的 JSON。</li></ul>
+<p>HTTP 请求及路由见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L109-L116">examples/static/chat.html:109–116</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L46-L50">examples/datachannel_chat.rs:46–50</a>。内部 <code>InternalMessage</code> 定义见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L24-L28">examples/datachannel_chat.rs:24–28</a>。后面的发送代码会进一步证明为什么只发其中的 text。</p>
+<p>这里的 <code>type: "chat"</code> 是示例自定的 JSON 字段，不是 SDP 媒体类型，也不是 DTLS 消息类型。浏览器与 Rust 约定如何解释这段字符串；DataChannel 不替应用解释“聊天”和“登录”。</p>
+<h2 id="section-3">3. Alice 的发送按钮做了两件不同的事</h2>
+<p>下面是原浏览器文件的连续摘录。你不需要把它另存成一个新页面。</p>
+<pre><code>sendBtn.onclick = () =&gt; {
+    const msg = msgInput.value;
+    if (msg &amp;&amp; dc &amp;&amp; dc.readyState === 'open') {
+        const payload = JSON.stringify({ type: "chat", content: msg });
+        dc.send(payload);
+        log("Me: " + msg, "sent");
+        msgInput.value = '';
+    }
+};</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L171-L179">examples/static/chat.html:171–179</a>。</p>
+<p>当输入是 <code>L16-R1-A1</code>，应用构造的 JSON 等价于：</p>
+<pre><code>{"type":"chat","content":"L16-R1-A1"}</code></pre>
+<p>这是按源码推演的字段示意，不是捕获的网络字节，也不承诺空格或字段顺序。注意两点：</p>
+<ol><li>客户端这个 chat 对象没有 sender。Alice 的名字不是发送按钮在这里拼进去的。</li><li><code>dc.send(payload)</code> 之后紧接着调用本地 <code>log("Me: " + msg, "sent")</code>。这条显示没有等待 Bob 的应用回执。调用若抛错也不会正常执行到后面的显示，因此 Me 既不是“完全没执行任何发送”，也不是“另一页已收到”。</li></ol>
+<p><code>log</code> 在这里创建并追加页面文字，见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L60-L66">examples/static/chat.html:60–66</a>。你可以在源文件中同时圈出“发送”和“本地显示”，不能把两处当成同一份接收证据。</p>
+<h2 id="section-4">4. login 给当前连接登记名字，不是握手消息</h2>
+<p>浏览器在通道打开回调里自动发送 login，不需要你再找一个 Login 按钮：</p>
+<pre><code>channel.onopen = () =&gt; {
+    statusDiv.textContent = "Status: Connected";
+    msgInput.disabled = false;
+    sendBtn.disabled = false;
+    disconnectBtn.disabled = false;
+    log("Connected as " + name, "info");
+
+    // Send login message
+    channel.send(JSON.stringify({ type: "login", name: name }));
+};</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L138-L147">examples/static/chat.html:138–147</a>。<code>Connected as Alice</code> 在调用 login 发送之前就已被本页写出来，所以这行也不是 Rust 确认名字登记成功的应用回执。</p>
+<p>服务端为这次连接创建的任务，初始有 <code>my_name: Option&lt;String&gt; = None</code>，见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L113-L118">examples/datachannel_chat.rs:113–118</a>。解析到 login 后才给它赋值：</p>
+<pre><code>ClientMessage::Login { name } =&gt; {
+    my_name = Some(name.clone());
+    info!("Client {} logged in as {}", my_id, name);
+    let sys_msg = ServerMessage::System {
+        content: format!("{} joined the chat", name),
+    };
+    let _ = tx.send(InternalMessage {
+        sender_id: my_id,
+        text: serde_json::to_string(&amp;sys_msg).unwrap(),
+    });
+}</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L142-L152">examples/datachannel_chat.rs:142–152</a>。上面的 <code>ClientMessage</code>、<code>ServerMessage</code> 是示例自己的应用枚举，不是 rustrtc 的握手类型。定义见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L74-L90">examples/datachannel_chat.rs:74–90</a>。</p>
+<p>这里的名字只是应用接收并保存的字符串，不证明现实身份。login 不是 ICE ufrag/pwd、证书校验或 DCEP OPEN。第 15 课已解释通道的预协商方式，本课不重新展开。</p>
+<p>Bob 的 login 会产生一条 system 消息供其他客户端显示。Alice 看到 <code>[System]: Bob joined the chat</code>，能支持本例相关通知已到 Alice；<strong>它不能替代 Bob 收到 Alice 某条 chat 的证据</strong>，方向和消息都不同。</p>
+<h2 id="section-5">5. Rust 收到字节后，重新构造服务端消息</h2>
+<p>先认清应用枚举的字段。下面是原 Rust 文件的连续摘录：</p>
+<pre><code>#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum ClientMessage {
+    #[serde(rename = "login")]
+    Login { name: String },
+    #[serde(rename = "chat")]
+    Chat { content: String },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum ServerMessage {
+    #[serde(rename = "chat")]
+    Chat { sender: String, content: String },
+    #[serde(rename = "system")]
+    System { content: String },
+}</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L74-L90">examples/datachannel_chat.rs:74–90</a>。<code>#[serde(tag = "type")]</code> 让应用用 type 字段区分分支。客户端 Chat 只有 content；服务端 Chat 另有 sender。这里的两个 Chat 不是同一个 Rust 类型。</p>
+<p>接收入口的分支开头是：</p>
+<pre><code>Some(DataChannelEvent::Message(data)) =&gt; {
+    if let Ok(msg) = serde_json::from_slice::&lt;ClientMessage&gt;(&amp;data) {</code></pre>
+<p>这只是原 match 分支的开头，不是可独立编译的完整程序。来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L137-L141">examples/datachannel_chat.rs:137–141</a>。<code>DataChannelEvent::Message(data)</code> 和 <code>recv</code> 的定义见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/datachannel.rs#L116-L124">src/transports/datachannel.rs:116–124</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/transports/datachannel.rs#L247-L250">247–250</a>。</p>
+<p>通道消息到达还要符合应用解析规则。解析成功得到 ClientMessage 后，chat 分支继续执行：</p>
+<pre><code>ClientMessage::Chat { content } =&gt; {
+    if let Some(name) = &amp;my_name {
+        let chat_msg = ServerMessage::Chat {
+            sender: name.clone(),
+            content,
+        };
+        let _ = tx.send(InternalMessage {
+            sender_id: my_id,
+            text: serde_json::to_string(&amp;chat_msg).unwrap(),
+        });
+    }
+}</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L153-L164">examples/datachannel_chat.rs:153–164</a>。逐行只问三个问题：有没有登记名字？sender 从哪里取？序列化的完整对象是什么？</p>
+<p>图 2 把同一个教学标记的字段变化放在一起。图中的对象是逻辑值示意，不是抓包。内部行也不是让你部署的新 JSON 协议。</p>
+<figure><figcaption>图 2 · 字段与封装变化。逻辑值示意，非抓包。</figcaption><pre><code>Alice 发给 Rust
+  type = chat
+  content = L16-R1-A1
+        ↓ Rust 使用该连接的 my_name = Alice
+Rust 构造服务端 JSON
+  type = chat
+  sender = Alice
+  content = L16-R1-A1
+        ↓ 序列化
+Rust 进程内 InternalMessage
+  sender_id = Alice连接的内部编号
+  text = 上面整个服务端JSON的字符串
+        ↓ 转发时只发送 text
+Bob 收到并解析服务端 JSON
+  显示 Alice: L16-R1-A1</code></pre></figure>
+<p>所以 Rust 不是原样转发客户端那段 JSON。它为服务端消息加上已登记的 sender，再把新消息序列化放入内部广播。<code>sender_id</code> 用来控制进程内转发；它不是发到浏览器里的 sender 字符串，也不是消息序号。</p>
+<p>正常页面会先发 login。本课纸面分析还应看见一个边界：假设某个自定义客户端没登记名字就发 chat，<code>if let Some(name)</code> 不会进入广播块。这是源码条件推演，不是本课注入非法消息做了实测。</p>
+<h2 id="section-6">6. 一个接收任务，加上每个连接自己的转发任务</h2>
+<p>下面摘录的是当前连接的广播转发任务，不是收到 Alice 数据就直接调用 Bob 页面代码。</p>
+<pre><code>let sender_task = tokio::spawn(async move {
+    while let Ok(msg) = rx.recv().await {
+        if msg.sender_id != my_id
+            &amp;&amp; let Err(e) = pc_sender.send_text(0, msg.text).await
+        {
+            warn!("Failed to send data to client {}: {}", my_id, e);
+            break;
+        }
+    }
+});</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L122-L131">examples/datachannel_chat.rs:122–131</a>。每个 offer 各自创建连接和 id，并订阅共享广播，见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L94-L115">examples/datachannel_chat.rs:94–115</a>。</p>
+<p>图 3 是两个页面时的任务关系示意，不是线程或网络数据包的固定执行顺序：</p>
+<figure><figcaption>图 3 · 两个连接各自的转发任务。示意，非线程执行时序。</figcaption><pre><code>Alice → Rust的Alice接收任务 → 共享广播
+                              ├→ Alice转发任务
+                              │   sender_id == my_id，跳过
+                              └→ Bob转发任务
+                                  sender_id != my_id
+                                  send_text(0, msg.text)
+                                          ↓
+                                       Bob页面</code></pre></figure>
+<p>最容易看反的是 <code>my_id</code>。在 Alice 的转发任务里，它是 Alice 这次连接的编号；在 Bob 的转发任务里，它是 Bob 的编号。同一广播项的 sender_id 则仍表示原发送连接。</p>
+<p>本例按连接编号排除发送者，不按用户名字符串排除。两个连接若取同名，名字会让人看不清，但这个过滤条件不会因此把它们合成一个连接。练习仍用 Alice、Bob，避免观察歧义。</p>
+<p><code>send_text(0, msg.text)</code> 的第一个参数是该连接里的通道 id。两个连接都能用 0，不表示这是全局“房间 0”，也不是 TCP/UDP 端口。发送入口定义见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L4201-L4210"><code>PeerConnection::send_text</code>，src/peer_connection.rs:4201–4210</a>。</p>
+<p>这里实际发送的是 msg.text，即序列化的服务端 JSON。内部结构体的 sender_id 没有作为第二份 JSON 包裹一起发出。应用广播也不保证所有订阅者已经读到、解码或显示。本课不扩展队列积压、重试和背压实现。</p>
+<h2 id="section-7">7. Bob 还要解析并显示，收到不等于显示</h2>
+<p>浏览器接收回调原文如下：</p>
+<pre><code>channel.onmessage = e =&gt; {
+    try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'chat') {
+            log(msg.sender + ": " + msg.content, "received");
+        } else if (msg.type === 'system') {
+            log("[System]: " + msg.content, "info");
+        }
+    } catch (err) {
+        log("Raw: " + e.data, "received");
+    }
+};</code></pre>
+<p>来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L148-L159">examples/static/chat.html:148–159</a>。</p>
+<p>纸面输入 <code>{"type":"chat","sender":"Alice","content":"L16-R1-A1"}</code> 时，回调解析对象，再把 sender、冒号和 content 拼成页面文字。你看见的 <code>Alice: ...</code> 不是网络层自动添加的，也不是 SDP 的字段。</p>
+<p>三个判断要分开：</p>
+<ul><li>通道把数据交给 onmessage。</li><li>应用成功解析，并选中了 chat 或 system 分支。</li><li>页面追加了你要找的本轮标记。</li></ul>
+<p>例如，纸面输入未加 JSON 引号的 <code>hello</code>，JSON.parse 会失败，按此回调进入 catch，尝试显示 <code>Raw: hello</code>。这是源码推演，不是本轮收到过这个坏消息。一般看到 Raw 只说明 try 块内发生异常，不能不查内容就认定是 ICE 失败，或断言所有 Raw 都只来自语法错误。</p>
+<p>再看一个纸面对象 <code>{"type":"notice","content":"L16-R1-A1"}</code>。它是合法 JSON，但本回调没有 notice 分支，也不会仅因 type 未识别而自动抛错。因此“合法 JSON”“符合此应用约定”“页面显示”是三件事。</p>
+<p>协议只在这里补一条边界：DataChannel 使用 SCTP 消息服务，这些应用消息并不是每条都对应一个 UDP 数据报，底层可以分片。也不能把一次 <code>DataChannelEvent::Message</code> 当作直接从 UDP socket 读到的一包。依据：<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-5">RFC 8831 §5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6">§6.6</a>。这不改变本课在应用消息层逐项追踪的做法。</p>
+<h2 id="section-8">8. 源码追踪不是示例自带的逐步日志</h2>
+<p>第 15 课已有的云端成功证据，是两个页面收到对方的 <code>hello-from-alice</code> / <code>hello-from-bob</code>，并记录通道打开与名字登记。那不是今天新跑出的 L16 标记记录，更不是你的 Windows 运行结果。</p>
+<p>当前例子的相关日志记录 open、login、close 和部分错误，没有在上面每条 chat 的各个处理节点都写 INFO。相关分支见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L137-L174">examples/datachannel_chat.rs:137–174</a>。设置 RUST_LOG 不会凭空增加源码没有写出的逐步聊天日志。</p>
+<p>填写证据卡时分两栏，不把推演写成观察：</p>
+<div class="table-scroll"><table><thead><tr><th scope="col">项目</th><th scope="col">你实际观察什么</th><th scope="col">单凭它不能推出什么</th></tr></thead><tbody><tr><td>发送页的 Me 加本轮标记</td><td>发送代码执行到本地显示</td><td>Rust 已解析、Bob 已显示</td></tr><tr><td>Rust 的 login 日志</td><td>相应连接执行了名字登记分支</td><td>后续每条 chat 都已送达</td></tr><tr><td>Alice 看见 Bob joined 通知</td><td>该通知在 Alice 页显示</td><td>Bob 已收到 Alice 的 chat</td></tr><tr><td>Bob 显示 Alice 加本轮唯一标记</td><td>本例该次应用内容已到 Bob 并显示</td><td>全部未来消息不丢、音频可播放</td></tr><tr><td>源码推演出的服务端 JSON</td><td>代码预期构造的字段</td><td>已经抓到了这份实际网络数据</td></tr></tbody></table></div>
+<p>这一层的 DataChannel 数据走 SCTP/DTLS，不是 SRTP 音频，也不是每发一句重做一次 SDP。只需复习 <a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-1">RFC 8831 §1</a> 的分层；握手、证书和音频调试本节不展开。</p>
+<h2 id="section-9">9. 三种现象，先写缺哪条证据</h2>
+<h3>只有 Me，没有 Bob 的接收文字</h3>
+<p>先确认 Bob 当前是否连接、有没有使用本轮独有标记、查看的是不是正确页面。再按“Rust 接收、解析、名字、广播、Bob 转发、Bob 解析显示”列未知项。没有服务端逐条 chat 日志时，不凭日志安静就断言 Rust 没收到。</p>
+<p>本课不要求你添加日志代码，也不让你改协议碰运气。先交现有页面状态、终端真实错误、标记和具体缺失现象。如果这些证据仍不足，下一次再设计一个小的受控验证任务。</p>
+<h3>Bob 看到 Raw，或合法 JSON 没有显示</h3>
+<p>按第 7 节检查应用解析和类型分支。Raw 表明回调拿到过数据并在 try 内遇到异常，不是“完全没数据”的同义词。合法但未处理的 notice 对象，又不同于解析失败。</p>
+<p>这两个都是分析场景，不要求你在控制台构造或注入消息。不要因为应用 JSON 不匹配就关掉 DTLS 验证、改用纯 RTP，或重新收集 ICE 候选。</p>
+<h3>Bob 已断开，Alice 仍能在本页写出 Me</h3>
+<p>浏览器的 Disconnect 处理会关闭该页连接/通道、显示 Disconnected 并禁用发送，见 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L119-L135">examples/static/chat.html:119–135</a>。它并不把 Alice 的 Me 变成 Bob 收件回执。</p>
+<p>如果 Alice 自己的通道仍 open，Alice 的本地发送路径仍可能执行到 Me。不要由此宣布 Bob 已收到或“广播自动补送成功”。也不要给服务端的 left 通知承诺固定出现时间。新断开场景在本课未实测。</p>
+<h2 id="section-10">10. 不改代码的实践：交一张消息字段卡</h2>
+<p>先保证两个页面已 Connected。把 R1 换成本次未用过的短代号。只发教学标记，不发真实个人信息。</p>
+<ol><li>Alice 发送 <code>L16-R1-A1</code>。记录 Alice 页的 Me 与 Bob 页带 Alice 署名的同一标记。</li><li>Bob 回复 <code>L16-R1-B1</code>。这次必须在 Alice 页找到 Bob 的署名和标记。第一步成功不能替代反向观察。</li><li>不运行新代码，按正文写出 A1 的客户端 JSON、服务端 JSON、内部广播项各有哪些字段。把这些填在“源码推演”栏。</li><li>对照两个页面实际出现的文字，把“页面观察”栏补齐。没出现就写没出现，保留真实报错，不把预期抄成结果。</li><li>可选观察：Bob 点击 Disconnect。等它显示 Disconnected 后，若 Alice 自己仍 Connected，再发一个全新 A2 标记。只记录实际结果，不要求立即看见 left，不把“另一页没收到”的观察泛化成所有网络断开机制。</li></ol>
+<p>第五步是留给你的新观察任务，课前没有对这个新标记/断开场景做验收。不会改动源程序；如果 Alice 也已经关闭，就不要为了制造 Me 而绕过页面状态检查。</p>
+<p>卡片只需写六行：</p>
+<ul><li>本次源码 SHA 与教学标记。</li><li>客户端 chat JSON 的字段。</li><li>sender 名字在 Rust 哪里取得。</li><li>InternalMessage 的 text 保存什么，sender_id 用来做什么。</li><li>发送页与接收页实际看见的文字，注明方向。</li><li>一条已经支持的结论，以及一条仍未知的结论。</li></ul>
+<h2 id="section-11">11. 八道自测</h2>
+<p>先一次答完，再展开各题答案。下面都是简答，没有通过选项长度提示答案。</p>
+<ol><li>Alice 发 A1 时，客户端 chat JSON 包含 sender 吗？Bob 看见的 Alice 字符串由谁加入，取自哪里？</li><li><code>Connected as Alice</code> 为什么还不能当 Rust 已处理 login 的确认？login 是哪层协议？</li><li>Rust 的 <code>ClientMessage::Chat</code> 和 <code>ServerMessage::Chat</code> 分别有哪些字段？收到通道消息后，如果应用解析不成功，能直接跳到正常 chat 广播吗？</li><li>转发 <code>send_text(0, msg.text)</code> 时，发的是纯 content、完整服务端 JSON 字符串，还是整个 InternalMessage？0、sender_id、sender 分别表示什么？</li><li>Alice 的消息进入共享广播后，为什么 Alice 的转发任务跳过，而 Bob 的转发任务发送？如果两人名字相同，过滤条件会变吗？</li><li>纸面输入未加引号的 hello 与 <code>{"type":"notice","content":"A1"}</code>，在 Bob 的回调中分别怎样处理？Raw 能直接证明 ICE 没通吗？</li><li>Alice 看见 <code>Me: A1</code> 和 Bob joined 通知，足够证明 Bob 收到 A1 吗？哪条额外观察才能支持本例的这个结论？</li><li>某人说“没看到逐条聊天 INFO，所以 Rust 一定没收到；DataChannel 的一条 JSON 就是一包 UDP；这次聊天成功也证明音频能播放”。逐项指出依据缺在哪里。</li></ol>
+<h2 id="section-12">参考答案</h2><details class="answer-section"><summary>第 1 题参考答案</summary><p>没有，客户端 chat 只发 type 和 content。Rust 在该连接的 chat 分支读取 my_name，填到服务端 Chat 的 sender，再序列化转发。</p></details><details class="answer-section"><summary>第 2 题参考答案</summary><p>浏览器在发送 login 之前先写了 Connected as。这只反映本地回调推进，不是 Rust 的应用确认。login 是聊天应用登记名字，不是 ICE、DTLS 或 DCEP。</p></details><details class="answer-section"><summary>第 3 题参考答案</summary><p>客户端 Chat 有 content，服务端 Chat 有 sender 和 content。应用按 type 解析为 ClientMessage。解析不成功不进入该正常匹配/广播块；通道收到字节不保证应用接收成功。</p></details><details class="answer-section"><summary>第 4 题参考答案</summary><p>发的是 msg.text 中的完整服务端 JSON 字符串。0 是当前连接的通道编号；sender_id 是内部原发送连接编号；sender 是给页面显示的已登记名字。InternalMessage 包装不直接发给浏览器。</p></details><details class="answer-section"><summary>第 5 题参考答案</summary><p>Alice 任务的 my_id 等于该广播项 sender_id，所以跳过。Bob 任务的 my_id 不同，所以进入发送条件。比较的是连接编号而不是名字，两人同名不改变此条件。</p></details><details class="answer-section"><summary>第 6 题参考答案</summary><p>hello 在 JSON.parse 处失败，按纸面代码进入 catch 并尝试显示 Raw。notice 对象能解析，但本例没有相应显示分支，不自动因未知 type 抛错。Raw 不是 ICE 未通的证明。</p></details><details class="answer-section"><summary>第 7 题参考答案</summary><p>不足。Me 是本地追加，Bob joined 是不同方向、不同消息的通知。应在当前 Bob 页面实际看到 Alice 加本次唯一 A1 标记，不能用旧文字代替。</p></details><details class="answer-section"><summary>第 8 题参考答案</summary><p>示例未为每条 chat 的每个节点写 INFO，日志缺席不足以判定没接收；SCTP 消息可在底层分片，不能一一对应 UDP；聊天应用接收不验证音频的 SRTP、解码或播放。都应找对应层的证据。</p></details>
+<h2 id="section-13">12. 间隔复习与主读来源</h2>
+<p>明天遮住正文，画三样东西：客户端 JSON、内部广播项、服务端 JSON。用箭头标出是谁添加 sender、在哪一层过滤发送者。隔一天只看一行 Me，复述它能证明与不能证明的事情。</p>
+<p>主读 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L113-L174">examples/datachannel_chat.rs:113–174</a>，对照 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/static/chat.html#L138-L179">examples/static/chat.html:138–179</a>。应用字段定义看 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L24-L28">examples/datachannel_chat.rs:24–28</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L74-L90">74–90</a>。先读这两个小文件，不必去读整个 SCTP 栈。</p>
+<p>协议只补充 <a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-1">RFC 8831 §1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-5">§5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6">§6.6</a>。消息格式、名字登记和转发规则来自本例源码，不是 RFC 规定所有聊天应用都必须使用这些 JSON 字段。</p>
+<p>可以一次交“0016 六行卡 + 八题答案”，也可以附真实错误并追问某个分支。不要贴真实 SDP 凭证或密钥。读过、已保存、课前别人的测试成功，都不等于你已独立完成运行或掌握。</p>
+<p>上一课：<a href="0015-datachannel-chat.html">0015 运行 DataChannel 聊天</a>。复习：<a href="0014-offer-answer-evidence.html">0014 区分协商与运行证据</a>。</p></main><nav class="next"><a href="0015-datachannel-chat.html">上一课：运行 DataChannel 聊天</a><a href="../index.html">课程目录</a></nav><footer>2026-11-20（Asia/Tokyo）· 固定源码 f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa。代码摘录与预期推演不冒充新实测。</footer></body></html>
