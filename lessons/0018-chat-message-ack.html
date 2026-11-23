@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第18课：给聊天加消息编号与应用层接收确认</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第18课 · 约30–40分钟 · <a href="../index.html">课程目录</a></header><main><h1>给聊天加消息编号与应用层接收确认</h1><nav aria-label="本课目录"><a href="#section-1">1. 在新目录准备代码：先原例，再补丁</a> · <a href="#section-2">2. 只扩展应用JSON，不重做连接协议</a> · <a href="#section-3">3. 浏览器如何按id更新那一行</a> · <a href="#section-4">4. 断开、重连与确认语义</a> · <a href="#section-5">5. 真实验证、反例与排错</a> · <a href="#section-6">6. 实践、八题自测与间隔回忆</a></nav>
+<p>先看你这次会得到什么。Alice 发一条消息，Bob 的应用追加文字后回一条 ACK，Alice <strong>只更新那个编号对应的原消息行</strong>。它解决第16课留下的问题：<code>Me:</code> 是本地显示，如何得到另一页应用处理过这条消息的证据？</p>
+<p>本课约30–40分钟：准备和双页验收10–15分钟，读改动12分钟，实践和八题自测10分钟。只有一个改动目标，不加数据库、自动重试、账号认证或音频。还没收到你前几课的运行结果，不假定你已跑通；下面保留原例检查点。</p>
+<p><a href="../practice/0018-chat-message-ack/0018-chat-message-ack.zip">下载0018完整代码包</a> · <a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/raw/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/0018-chat-message-ack.zip">固定提交下载</a> · <a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/README.md">运行说明</a></p>
+<p><strong>只克隆原仓库并运行 <code>cargo run --example datachannel_chat</code>，不会自动出现本课功能。</strong>你需要先固定上游版本，再应用下载包里的两个文件补丁。本课所有新增代码来自公开课程提交 <code>fd375d952a285f4e9350d129537598376000d5e6</code>；原例基线是 rustrtc <code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。两者行号不能混用。</p>
+<p>代码已经在2026-11-24 JST的云端Linux与真实Chrome双页验证。不是你的Windows，也不是教学共享电脑的新运行。没有取得成功截图，下文三张图是代码流程示意，不是截图或抓包。Windows步骤供你执行，未做Windows实测。</p>
+<h2 id="section-1">1. 在新目录准备代码：先原例，再补丁</h2>
+<h3>1.1 下载、核对、解压，再克隆固定上游</h3>
+<p>以下是你在 <strong>Windows 11 PowerShell</strong> 执行的步骤，不是Windows运行记录。沿用你已有的Git、Rust、Chrome，不在本课重配系统环境。已有工程不改动；目录若存在就停止，另换一个新名字。</p>
+<p>下载包不是完整Cargo工程。解压后外层目录叫 <code>0018-chat-message-ack</code>，里面有 <code>examples/</code>、补丁、README、验证记录和云端测试脚本。不能在解压目录直接运行cargo，也不必克隆教学私有仓库。</p>
+<pre><code class="language-powershell">$ErrorActionPreference = "Stop"
+$work = Join-Path $HOME "rustrtc-0018-ack"
+if (Test-Path $work) { throw "目录已存在。换一个全新目录名，不要覆盖。" }
+New-Item -ItemType Directory -Path $work | Out-Null
+$zip = Join-Path $work "0018-chat-message-ack.zip"
+$url = "https://github.com/penanegrarenea-ship-it/rustrtc-lessons/raw/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/0018-chat-message-ack.zip"
+Invoke-WebRequest -Uri $url -OutFile $zip
+$expected = "9c86addc7853d62d00de755f0784607905f4f016b56c82f852f3371933e21335"
+if ((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant() -ne $expected) {
+    throw "下载包SHA256不符，停止，不要应用。"
+}
+$bundle = Join-Path $work "bundle"
+Expand-Archive -Path $zip -DestinationPath $bundle
+$patch = Join-Path $bundle "0018-chat-message-ack\0018-against-f1b59bf6.patch"
+if (!(Test-Path $patch)) { throw "补丁位置不符，先核对解压目录。" }
+$src = Join-Path $work "rustrtc"
+git clone https://github.com/restsend/rustrtc.git $src
+if ($LASTEXITCODE -ne 0) { throw "克隆失败，停止。" }
+Set-Location $src
+$commit = "f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa"
+git checkout --detach $commit
+if ($LASTEXITCODE -ne 0) { throw "切换固定提交失败，停止。" }
+$head = git rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { throw "提交不符，停止。" }
+rustc --version
+$env:RUST_LOG = "info"
+cargo run --example datachannel_chat
+</code></pre>
+<p>下载SHA256：<code>9c86addc7853d62d00de755f0784607905f4f016b56c82f852f3371933e21335</code>。固定提交下载地址在本课准备时已实际返回200，下载字节的哈希与此一致。哈希用于核对这个固定文件，不是应用身份认证。</p>
+<p>最后一条命令先运行<strong>未改的原例</strong>。编译可能另需时间。已验证工具链为rustc/cargo 1.100.0；不把某个依赖最低版本当全工程保证。版本错误和端口冲突可回<a href="0015-datachannel-chat.html">0015启动与排错</a>。</p>
+<h3>1.2 保留原例双页检查点</h3>
+<p>服务启动后，只打开两个 <code>http://127.0.0.1:3000/</code> 页面。Alice、Bob各点击 <strong>Connect</strong>，等各自Connected，再互发一条新标记。验收看另一页带对方名字的文字，不只看本地Me。按钮仍是Connect / Send / Disconnect，没有Join。</p>
+<p>若原例不通，先记录实际错误，停在这个检查点。不要用打补丁掩盖既有建连问题。HTTP返回answer、候选收集完成、DataChannel打开和另一页显示消息仍是不同证据，回顾<a href="0017-offer-handler-lifecycle.html">0017</a>。</p>
+<p>确认原例通后，两页点Disconnect。在启动服务的PowerShell按Ctrl+C，仅停止自己这次启动的服务。保留同一个PowerShell窗口，变量 <code>$src</code>、<code>$patch</code>、<code>$commit</code> 仍在。</p>
+<h3>1.3 只向新克隆打补丁，重新编译</h3>
+<pre><code class="language-powershell">Set-Location $src
+$head = git rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { throw "不在固定提交，停止。" }
+git diff --quiet -- examples/datachannel_chat.rs examples/static/chat.html
+if ($LASTEXITCODE -ne 0) { throw "两个目标文件已有改动，停止，不覆盖。" }
+git apply --check $patch
+if ($LASTEXITCODE -ne 0) { throw "补丁检查失败，停止，不要强制应用。" }
+git apply $patch
+if ($LASTEXITCODE -ne 0) { throw "补丁应用失败，停止。" }
+git diff --stat -- examples/datachannel_chat.rs examples/static/chat.html
+cargo run --example datachannel_chat
+</code></pre>
+<p>这是同一PowerShell会话里的第二段。不要把它用于你有自己改动的旧工程，也不要重复应用已经打过的补丁。没有<code>reset --hard</code>或清理旧目录步骤。</p>
+<p>补丁只改两个示例应用文件，不改rustrtc库和Cargo依赖。<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/0018-against-f1b59bf6.patch">补丁原文</a>。HTML由Rust在编译时嵌入，所以改HTML后也必须重编译。相关入口见<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/datachannel_chat.rs#L58-L60">新增文件58–60行</a>。<code>cargo run</code>从仓库根目录运行，避免旧二进制仍占3000端口。</p>
+<p>重新加载两个页面，必要时强制刷新，重新Connect为Alice和Bob。Alice发送<code>L18-R1-A1</code>，Bob回复<code>L18-R1-B1</code>。现在发送页自己的原消息行应带id，并变为“收到Bob应用确认”或“收到Alice应用确认”。这个预期来自已验收代码，但你自己的运行仍需实际观察。</p>
+<p>若始终还是没有id的旧Me文字，先查补丁是否应用、服务是否重编译重启、页面是否重新加载，不先改ICE配置。</p>
+<h2 id="section-2">2. 只扩展应用JSON，不重做连接协议</h2>
+<p>图1是新增应用往返示意，<code>A-1</code>只是纸面编号，不是实际UUID或抓包。两页已经完成原例的连接与应用login。</p>
+<figure><pre><code class="language-text">图1：一条chat的应用确认
+Alice页面              Rust服务端               Bob页面
+chat(id=A-1) ───────→  转发chat ───────────────→  解析并追加文字
+本地行：尚无确认                                  │
+                                                ↓
+匹配A-1并改原行 ←──── 转发ack  ←────────────── ack(id=A-1)
+</code></pre><figcaption>依据代码绘制的教学示意，非截图或抓包。</figcaption></figure>
+<p>HTTP <code>/offer</code>仍只负责这例子的SDP交换。chat和ack都走已经打开的数据通道，不是每条消息重发offer，也不是浏览器之间直连。每页到Rust分别有自己的SCTP/DTLS/ICE连接，Rust可以读取并转发应用文字。</p>
+<p>应用约定只有下面四种形状。省略号是字段示意，不是可部署密钥或真实捕获值。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>应用字段</th>
+<th>哪些来自谁</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Alice到Rust</td>
+<td>type=chat、id、content</td>
+<td>Alice生成id与正文</td>
+</tr>
+<tr>
+<td>Rust到Bob</td>
+<td>type=chat、同一id、sender、content</td>
+<td>Rust用Alice连接登记名字填sender</td>
+</tr>
+<tr>
+<td>Bob到Rust</td>
+<td>type=ack、同一id</td>
+<td>Bob接收分支产生</td>
+</tr>
+<tr>
+<td>Rust到Alice</td>
+<td>type=ack、同一id、receiver</td>
+<td>Rust用Bob连接登记名字填receiver</td>
+</tr>
+</tbody>
+</table></div>
+<h3>2.1 Rust枚举把两种消息区分开</h3>
+<p>下面是新增文件的连续原文。它们是本例应用枚举，不是rustrtc或RFC自带聊天API。</p>
+<pre><code class="language-rust">#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum ClientMessage {
+    #[serde(rename = "login")]
+    Login { name: String },
+    #[serde(rename = "chat")]
+    Chat { id: String, content: String },
+    // 0018 teaching addition: the receiver page sends this after it has
+    // appended the chat text. Rust forwards it and does not create it.
+    #[serde(rename = "ack")]
+    Ack { id: String },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum ServerMessage {
+    #[serde(rename = "chat")]
+    Chat {
+        id: String,
+        sender: String,
+        content: String,
+    },
+    #[serde(rename = "ack")]
+    Ack { id: String, receiver: String },
+    #[serde(rename = "system")]
+    System { content: String },
+}
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/datachannel_chat.rs#L74-L100">examples/datachannel_chat.rs:74–100</a>。</p>
+<p><code>Chat.id</code>贯穿往返。<code>Ack</code>不包含正文，也不让浏览器直接提交一个receiver名字。Rust仍只在当前连接已有<code>my_name</code>时处理这些应用消息。名字是任意登记字符串，不是经过账号认证的身份。</p>
+<h3>2.2 Rust收到chat，不替Bob产生ack</h3>
+<p>以下是原match中的分支摘录，不能脱离上下文独立编译。</p>
+<pre><code class="language-rust">ClientMessage::Chat { id, content } =&gt; {
+    if let Some(name) = &amp;my_name {
+        info!("Client {} forwarded chat id {}", my_id, id);
+        let chat_msg = ServerMessage::Chat {
+            id,
+            sender: name.clone(),
+            content,
+        };
+        let _ = tx.send(InternalMessage {
+            sender_id: my_id,
+            text: serde_json::to_string(&amp;chat_msg).unwrap(),
+        });
+    }
+}
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/datachannel_chat.rs#L163-L176">examples/datachannel_chat.rs:163–176</a>。</p>
+<p>Rust保留id和content，用本连接的名字填sender，再放入原有共享广播。日志文字虽然叫<code>forwarded chat</code>，它位于广播调用之前，不是Bob已经接收的回执。应用仍忽略广播发送返回值，不把一行日志当成所有收件人成功。</p>
+<p>收到客户端ack才进入另一分支：</p>
+<pre><code class="language-rust">ClientMessage::Ack { id } =&gt; {
+    if let Some(name) = &amp;my_name {
+        info!(
+            "Client {} forwarded ack id {} receiver {}",
+            my_id, id, name
+        );
+        let ack_msg = ServerMessage::Ack {
+            id,
+            receiver: name.clone(),
+        };
+        let _ = tx.send(InternalMessage {
+            sender_id: my_id,
+            text: serde_json::to_string(&amp;ack_msg).unwrap(),
+        });
+    }
+}
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/datachannel_chat.rs#L177-L192">examples/datachannel_chat.rs:177–192</a>。</p>
+<p>这次<code>my_name</code>属于发来ack的Bob连接，因此receiver是Bob。这里的<code>sender_id</code>也填Bob内部连接编号。原来的转发过滤就会跳过Bob自己，把ack送到另一页Alice，见<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/datachannel_chat.rs#L130-L141">同文件130–141行</a>。</p>
+<p>本课严格限定<strong>同一服务上两个协作页面</strong>。没有定向路由表，也没有证明“全部房间成员都收到”。第三页参加时也会收到广播，确认来源和含义就会改变。不要把这个练习包装成多人私聊收据系统。</p>
+<h2 id="section-3">3. 浏览器如何按id更新那一行</h2>
+<h3>3.1 待确认表只归发送页管理</h3>
+<p><code>pending</code>是当前页面的内存Map。它把本页发送的id关联到原文字行和正文，不是Rust服务器的消息数据库。</p>
+<pre><code class="language-javascript">let pc = null;
+let dc = null;
+// 0018: ids this page sent and has not yet matched to an ack.
+// Cleared on disconnect. Existing lines are left unchanged.
+const pending = new Map();
+
+function log(msg, type = 'info') {
+    const div = document.createElement('div');
+    div.className = 'message ' + type;
+    div.textContent = msg;
+    chatBox.appendChild(div);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    return div;
+}
+
+function ownLine(content, id, status) {
+    return "Me: " + content + "（id=" + id + "）" + status;
+}
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L57-L74">examples/static/chat.html:57–74</a>。</p>
+<p><code>log</code>返回新建的DOM节点，所以后面可以修改原节点的文字，而不是不断追加“某条消息已确认”的无关行。文字用<code>textContent</code>插入，不按HTML执行。</p>
+<p>图2是内存关联示意，不是运行截图。两次正文都一样，完整id才是匹配键。</p>
+<figure><pre><code class="language-text">图2：同正文，不同关联项
+pending
+  id-A → { el: 第1行, content: "same-body" }
+  id-B → { el: 第2行, content: "same-body" }
+
+收到ack(id-A)：删id-A，修改第1行
+保留id-B：第2行仍未确认
+</code></pre><figcaption>依据代码绘制的教学示意，非截图或抓包。</figcaption></figure>
+<h3>3.2 发送成功返回后，只写尚未确认</h3>
+<pre><code class="language-javascript">sendBtn.onclick = () =&gt; {
+    const msg = msgInput.value;
+    if (!(msg &amp;&amp; dc &amp;&amp; dc.readyState === 'open')) {
+        return;
+    }
+    if (!crypto.randomUUID) {
+        log("当前浏览器没有 crypto.randomUUID，未发送", "info");
+        return;
+    }
+    const id = crypto.randomUUID();
+    try {
+        dc.send(JSON.stringify({ type: "chat", id: id, content: msg }));
+    } catch (err) {
+        log("发送失败，未得到对端确认", "info");
+        return;
+    }
+    const el = log(ownLine(msg, id, "本地已提交，尚无对端确认"), "sent");
+    pending.set(id, { el: el, content: msg });
+    msgInput.value = '';
+};
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L200-L219">examples/static/chat.html:200–219</a>。</p>
+<p>顺着代码读：检查非空输入与open状态，检查UUID能力，生成id，调用发送；若抛异常就报告发送失败并返回。未抛异常时，才追加本地行并存入pending。它没有在这里宣称Bob已收到。</p>
+<p>实际实现用<code>crypto.randomUUID()</code>，不是拿正文做键，也不是复用SCTP通道id0。浏览器若没有该能力，代码只给出提示并停止，不偷偷换一个未验证的生成方法。本课保持本地HTTP入口和已验收浏览器条件，不教改成公网服务。</p>
+<h3>3.3 Bob先追加文字，再发送应用ACK</h3>
+<p>以下是接收回调的连续原文，包含chat与ack两个分支。</p>
+<pre><code class="language-javascript">channel.onmessage = e =&gt; {
+    try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'chat') {
+            log(msg.sender + ": " + msg.content + "（id=" + msg.id + "）", "received");
+            if (msg.id &amp;&amp; channel.readyState === 'open') {
+                channel.send(JSON.stringify({ type: "ack", id: msg.id }));
+            }
+        } else if (msg.type === 'ack') {
+            const item = pending.get(msg.id);
+            if (!item || !msg.receiver) {
+                return;
+            }
+            pending.delete(msg.id);
+            item.el.textContent = ownLine(
+                item.content,
+                msg.id,
+                "收到" + msg.receiver + "应用确认"
+            );
+        } else if (msg.type === 'system') {
+            log("[System]: " + msg.content, "info");
+        }
+    } catch (err) {
+        log("Raw: " + e.data, "received");
+    }
+};
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L159-L184">examples/static/chat.html:159–184</a>。</p>
+<p>chat分支先执行<code>log</code>，才在有id且channel仍open时发送ack。这里的含义是“应用执行了追加DOM文字的路径”，不是检测真人已读，也不保证浏览器已经完成一次屏幕绘制。</p>
+<p>ack分支只查本页pending。没有匹配项或没有receiver就返回。有匹配项时，先删除该id，再更新那个节点。相同ACK第二次到达时，pending里已无该项，因此不再修改；未知id也不新增消息行。ack分支没有再发送ack，所以不形成“确认的确认”循环。</p>
+<p>这是重复ACK的处理，不是完整聊天去重协议。本例并没有承诺重复chat永远只显示一次，也没有持久化、重试或崩溃恢复。</p>
+<h2 id="section-4">4. 断开、重连与确认语义</h2>
+<h3>4.1 清空关联，不篡改历史结论</h3>
+<p>新增文件的<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L128-L146">Disconnect分支128–146行</a>先清空pending，关闭本连接，然后恢复界面。重新Connect的<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L76-L92">83行</a>也清空pending。</p>
+<p>关闭回调还有一个当前通道判断：</p>
+<pre><code class="language-javascript">channel.onclose = () =&gt; {
+    if (dc !== channel) {
+        return;
+    }
+    pending.clear();
+    statusDiv.textContent = "Status: Disconnected";
+    msgInput.disabled = true;
+    sendBtn.disabled = true;
+    connectBtn.disabled = false;
+    disconnectBtn.disabled = true;
+    nameInput.disabled = false;
+    log("DataChannel Closed", "info");
+};
+</code></pre>
+<p>来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L185-L197">examples/static/chat.html:185–197</a>。</p>
+<p>旧通道若已不是当前dc，该关闭回调不再改当前界面。对于当前通道，清空的是待确认索引，不是DOM里的已有聊天文字。旧行仍写“本地已提交，尚无对端确认”，不擅自改成“对端未收到”。</p>
+<p>图3是本例页面状态示意，不是完整网络状态机。断开后的旧行不参与新会话的pending匹配。</p>
+<figure><pre><code class="language-text">图3：原行与待确认表的不同生命周期
+发送未抛错 → 原行：尚无确认 + pending[id]
+                      │
+             匹配ACK  ├→ 原行：收到某应用确认；删除pending[id]
+                      │
+             断开连接 └→ 原行保持尚无确认；清空pending
+                                ↓
+                         新连接生成新id与新待确认项
+</code></pre><figcaption>依据代码绘制的教学示意，非截图或抓包。</figcaption></figure>
+<h3>4.2 用准确句子描述这个ACK</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>已观察的证据</th>
+<th>可以支持</th>
+<th>不能单凭它支持</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本页出现带id的Me行</td>
+<td>本地发送路径执行到显示和登记</td>
+<td>Rust解析成功或Bob已追加文字</td>
+</tr>
+<tr>
+<td>Rust记录对应chat分支</td>
+<td>该连接解析并进入chat处理分支</td>
+<td>Bob收到、所有广播消费者发送成功</td>
+</tr>
+<tr>
+<td>Bob页显示对应id与正文</td>
+<td>Bob应用执行了该条文字追加</td>
+<td>Alice已经收到ACK</td>
+</tr>
+<tr>
+<td>Alice原行匹配ACK并更新</td>
+<td>在两个协作页面按本协议运行前提下，Bob的应用确认已经返回</td>
+<td>真人已读、落盘保存、现实身份或未来不丢</td>
+</tr>
+<tr>
+<td>一直没有ACK</td>
+<td>尚未得到应用确认</td>
+<td>消息一定丢失、Bob一定没收到</td>
+</tr>
+</tbody>
+</table></div>
+<p>receiver来自Rust当前连接登记的名字，不代表该名字经过认证。恶意客户端可以虚构应用ACK；这不是防伪的交付证明。Rust是两条DataChannel的端点，可读明文应用消息，不能说Alice到Bob做了端到端加密。</p>
+<h3>4.3 不要把三种“确认”混在一起</h3>
+<p>本课JSON <code>type=ack</code>是我们新增的应用协议，确认特定id的处理路径。SCTP传输确认属于底层传输机制，不替代应用显示证据。DCEP的<code>DATA_CHANNEL_ACK</code>用于建通道握手，不是在确认某条chat。</p>
+<p>协议分层见<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-1">RFC8831 §1</a>，用户数据传输见<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6">§6.6</a>。带外约定见<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.5">§6.5</a>，DCEP对照见<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.2">RFC8832 §5.2</a>。本例仍用双方预先约定的negotiated chat/id0，不因新增应用ACK而改发DCEP握手。</p>
+<h2 id="section-5">5. 真实验证、反例与排错</h2>
+<h3>5.1 先把运行地点说清楚</h3>
+<p>以下来自2026-11-24 JST云端真实验证，不是本执行器新跑程序，也不是你的Windows运行。Linux 6.12.113+ x86_64，rustc/cargo 1.100.0，Chrome 157.0.8103.50；在隔离的rustrtc仓库根目录构建并启动。<code>cargo build --example datachannel_chat</code>退出码0，保留库原有3条弃用警告，没有改库。重编译后读取根页面，确实包含新增“尚无对端确认”文字。</p>
+<p>五组测试都通过，随后无暂停注入的正常双向复测也通过。来源：<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/VALIDATION.md">VALIDATION.md</a>、<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/validation-browser.json">实际页面记录</a>、<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/validation-server.log">实际服务端记录</a>。没有取得成功截图，截图请求超时，因此不展示旧的Disconnected图或生成假截图。</p>
+<p>下面为实际服务端记录的脱敏节选，均为 <strong>2026-11-24 JST</strong>。<code>id-1</code>等是替换原UUID后的标签，同一标签对应同一编号。不同测试的client编号会增加，不是每组都重启服务。</p>
+<pre><code class="language-text">2026-11-24 02:35:20.922 JST  Listening on http://127.0.0.1:3000
+2026-11-24 02:35:22.019 JST  Client 1 forwarded chat id id-1
+2026-11-24 02:35:22.027 JST  Client 2 forwarded ack id id-1 receiver Bob
+2026-11-24 02:35:22.035 JST  Client 2 forwarded chat id id-2
+2026-11-24 02:35:22.036 JST  Client 1 forwarded ack id id-2 receiver Alice
+2026-11-24 02:35:23.036 JST  Client 5 forwarded chat id id-5
+2026-11-24 02:35:23.550 JST  Client 6 forwarded ack id id-5 receiver Bob
+</code></pre>
+<p>为了便于读图，此处省略了INFO级别和日志模块前缀，事件、时间、标签未改。<code>forwarded</code>字样仍按第2节的源码位置理解，不能只凭这行推断对页处理成功；需要与页面和测试记录合看。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>实际测试</th>
+<th>观察到的事实</th>
+<th>结论边界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>双向ACK</td>
+<td>Alice与Bob的各自原行分别得到对方确认</td>
+<td>这轮两个方向都通过</td>
+</tr>
+<tr>
+<td>相同正文不同id</td>
+<td>先释放第一条ACK，仅第一行确认；再释放第二条后第二行确认</td>
+<td>按id而非正文匹配</td>
+</tr>
+<tr>
+<td>暂缓ACK再释放</td>
+<td>Bob已有pause-check，Alice仍未确认；释放后才确认</td>
+<td>对方显示和确认返回是两件事</td>
+</tr>
+<tr>
+<td>重复与未知ACK</td>
+<td>Alice的ACK接收数1变3，发送数始终0；Me仍一行</td>
+<td>没有误匹配或ACK回环</td>
+</tr>
+<tr>
+<td>断开后新会话</td>
+<td>pending-left旧行保持未确认；after-reconnect新id得到确认</td>
+<td>不把旧待确认项带入新会话</td>
+</tr>
+</tbody>
+</table></div>
+<p>暂停只发生在<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/test/two-page.mjs#L24-L89">云端测试脚本的send包裹24–89行</a>，普通页面没有暂停按钮。它拦住特定应用ACK发送，<strong>没有关闭DataChannel</strong>。上面的约0.5秒是受控测试等待，不是网络延迟、RTT或性能测量。</p>
+<p>重复未知ACK的计数来自<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/test/two-page.mjs#L279-L318">测试279–318行</a>。正常确认后，Bob又发送重复ACK与未知id；Alice确实多收到两条，但没有回发ACK。不是仅凭“没看见刷屏”下结论。最后的<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/test/two-page.mjs#L367-L387">无暂停复测367–387行</a>使用final-a/final-b，两边各自确认。</p>
+<h3>5.2 三个排错场景</h3>
+<p>下面是结合已验证机制的排查题，不是声称所有读者故障都已复现。</p>
+<p><strong>场景A：启动成功，但发送后只有旧Me，没有id。</strong>先查是否仍是原例。核对补丁、两个改动文件、服务二进制和重新加载的页面。根HTML编译时嵌入，不能只保存HTML却继续用旧服务。保持两页都使用同一新版，不混用旧标签页。</p>
+<p><strong>场景B：Bob确有对应id，Alice一直未确认。</strong>已知chat到Bob应用，未知的是ACK产生、返回和Alice匹配。按“Bob的chat分支是否发ACK、Rust是否收到ACK、Alice是否收到且pending仍有该id”找证据。不要说“没确认所以没收到”，也不要因这一现象重做offer或关DTLS。</p>
+<p><strong>场景C：同一正文有两条，或者重连后收到旧ACK。</strong>先比较完整id和当前会话。匹配逻辑只查pending；相同正文不能替代编号。已确认项被删除，断开也清空，旧ACK不能因此改写旧行。这是新增本地关联规则，不是持久化送达协议。</p>
+<p>Windows、第三页、多网络、公网、音频、鉴权、持久保存和自动重试都没有因此验收。实际Linux测试成功不等于你的Windows已成功，也不等于已经学会实现。</p>
+<h2 id="section-6">6. 实践、八题自测与间隔回忆</h2>
+<h3>6.1 唯一实践：交一张同id往返证据卡</h3>
+<p>先完成第1节原例检查，再应用已经验证的补丁。此后不要求你改Rust API、SDP或测试注入器。只用两个普通浏览器页面，不启动第三页。</p>
+<ol>
+<li>Alice、Bob各Connect。Alice发<code>L18-R2-A1</code>，在Bob页找同id的文字，再在Alice原行找Bob应用确认。</li>
+<li>Bob回<code>L18-R2-B1</code>，这次反向找Alice确认。不要用第一步成功代替反向证据。</li>
+<li>Alice连续发送两条<code>same-body</code>。分别记下id，核对两个id不同，两条原行分别得到确认。正常运行可能很快完成，你不必肉眼看见中间未确认阶段。</li>
+<li>对照源文件圈出“发送页生成id”“接收页追加后ACK”“Rust转发ACK”“发送页匹配并删除pending”。这四处足以解释新增功能。</li>
+<li>把下列证据卡填完。未运行就标“纸面推演”，不要复制云端结果充作自己实测。暂缓ACK是云端专用测试，不要求你安装Node或运行Linux测试脚本。</li>
+</ol>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>卡片行</th>
+<th>你填写什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>版本</td>
+<td>上游固定SHA、下载包SHA256、是否已打补丁</td>
+</tr>
+<tr>
+<td>方向</td>
+<td>Alice到Bob或Bob到Alice，本次新标记</td>
+</tr>
+<tr>
+<td>同一编号</td>
+<td>发送原行id与接收行id，是否一致</td>
+</tr>
+<tr>
+<td>应用确认</td>
+<td>原行最终文字，或仍未确认及实际错误</td>
+</tr>
+<tr>
+<td>状态归属</td>
+<td>哪页pending保存该id，哪个分支删除它</td>
+</tr>
+<tr>
+<td>证据边界</td>
+<td>一条支持的结论，一条仍未知的结论</td>
+</tr>
+</tbody>
+</table></div>
+<p>可只提交教学标记、必要id和脱敏错误，不贴完整SDP、ICE凭证或私人聊天。应用消息id不是密钥，但公开记录仍只用本次教学内容。</p>
+<h3>6.2 八道自测</h3>
+<p>一次答完后，再分别展开答案。不需要逐题等聊天回复。</p>
+<h4>题1：代码从哪里来</h4>
+<p>只克隆固定版rustrtc并运行原例，为什么还不会出现接收确认？下载包解压后应在哪个目录执行cargo？</p>
+<details class="answer-section"><summary>题1参考答案</summary><p>原例没有id和ack字段。本课须向新克隆应用下载包里的两个文件补丁。cargo在包含上游Cargo.toml的rustrtc仓库根目录执行，不在解压包目录。打补丁后重新编译，并重新加载两页。</p></details>
+<h4>题2：画出同一个id</h4>
+<p>Alice发chat到最终原行更新，中间哪一端产生id，哪一端产生ack？Rust在收到chat时能自己生成这条“Bob应用确认”吗？</p>
+<details class="answer-section"><summary>题2参考答案</summary><p>Alice生成id，Rust把它随chat转发。Bob在解析并追加文字后产生同id的ack，Rust收到后填Bob登记名字并转发，Alice按id更新原行。Rust不能用收到chat代替Bob的应用处理确认。</p></details>
+<h4>题3：相同正文怎样区分</h4>
+<p>pending有id-A与id-B，两项正文都为same-body。只收到id-A的ACK，应该改哪行，删哪项？为什么不能按正文匹配？</p>
+<details class="answer-section"><summary>题3参考答案</summary><p>只改id-A关联的DOM行并删id-A，id-B仍待确认。正文可以重复，不表示是同一次发送；完整id才关联这条消息。代码不按最后一行或显示名字猜测。</p></details>
+<h4>题4：重复ACK与未知ACK</h4>
+<p>正常确认后再收到同id的ACK，随后又收到未知id的ACK，为什么不应多出chat行或不断发送新的ACK？</p>
+<details class="answer-section"><summary>题4参考答案</summary><p>第一次确认已经删除pending项。重复或未知id查不到item便返回，不新增chat行。ACK处理分支只匹配更新，不发送ACK，因此不发生确认循环。这不等于已经实现重复chat去重。</p></details>
+<h4>题5：没确认能说明丢了吗</h4>
+<p>Bob已显示pause-check，Alice仍“尚无对端确认”。能断言Bob没收到吗？测试暂停了哪层，能把两日志间隔当网络RTT吗？</p>
+<details class="answer-section"><summary>题5参考答案</summary><p>不能，Bob显示本身已支持应用收到并追加。云端脚本暂缓的是应用ACK的send，不是断开底层通道。间隔包含人为等待，不能当网络RTT或性能数字。尚无ACK只表示尚未得到确认。</p></details>
+<h4>题6：断开后的旧行</h4>
+<p>Alice带未确认消息断开，重连后收到旧id的ACK，旧行应该怎样？清空pending是否等于删聊天记录或判定对端未收？</p>
+<details class="answer-section"><summary>题6参考答案</summary><p>旧行保持未确认。断开清空的是当前连接的待确认关联，旧ACK无匹配项，不改旧行。它没有删除DOM文字，也不能推断Bob未收；新会话用新id建立新关联。</p></details>
+<h4>题7：谁是receiver</h4>
+<p>ACK里的receiver由哪里填？“收到Bob应用确认”能证明Bob的现实身份、真人阅读、落盘保存或端到端加密吗？第三页能直接参加这课验收吗？</p>
+<details class="answer-section"><summary>题7参考答案</summary><p>Rust从发来ACK的连接已登记名字填receiver。名字没有认证；协作页面追加DOM不证明真人阅读或保存。Rust能读转发内容，不是浏览器间端到端加密。该广播练习只按两个协作页面验收，不能直接扩大为多人保证。</p></details>
+<h4>题8：三种成功不要混同</h4>
+<p>本课JSON ACK、DCEP的DATA_CHANNEL_ACK与DataChannel open各说明什么？Linux五组全过后，还不能替用户声称哪些条件已经验证？</p>
+<details class="answer-section"><summary>题8参考答案</summary><p>JSON ACK确认特定消息的应用路径。DCEP ACK属于建通道握手，本例预协商通道不靠它。本端open是通道状态，不是特定chat处理证据。云端Linux成功不证明用户Windows、公网、第三页、音频或生产级安全与持久投递通过。</p></details>
+<h3>6.3 间隔复习与主读来源</h3>
+<p>明天不看正文，画一次同id的往返，标出“本地提交”和“对端应用确认”分别在哪里。隔一天回<a href="0016-chat-message-trace.html">0016</a>，用本课补丁解释原例为何无法凭Me确认；再回<a href="0017-offer-handler-lifecycle.html">0017</a>，区分HTTP返回、open和这次应用ACK，不重抄建连细节。</p>
+<p>主读是本课新增文件，而非上游原例：</p>
+<ul>
+<li><a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/static/chat.html#L159-L180">浏览器159–180行：追加文字、发ACK、按id更新</a>。</li>
+<li><a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/examples/datachannel_chat.rs#L163-L192">Rust163–192行：两种消息各自的广播分支</a>。</li>
+<li><a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/README.md">README</a>、<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/0018-against-f1b59bf6.patch">补丁</a>、<a href="https://github.com/penanegrarenea-ship-it/rustrtc-lessons/blob/fd375d952a285f4e9350d129537598376000d5e6/practice/0018-chat-message-ack/VALIDATION.md">验证记录</a>。</li>
+<li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/datachannel_chat.rs#L74-L90">原例消息枚举74–90行</a>，仅用于对比，没有本课id/ack扩展。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-1">RFC8831 §1</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.5">§6.5</a>、<a href="https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6">§6.6</a>，以及<a href="https://www.rfc-editor.org/rfc/rfc8832.html#section-5.2">RFC8832 §5.2</a>。这些定义分层、带外建通道、用户数据及DCEP对照，不规定本课JSON格式。</li>
+</ul>
+<p>可以一次交“0018证据卡和八题答案”，或针对一个实际错误追问。读完和他人测试通过都不自动记为你已掌握。</p>
+<p>上一课：<a href="0017-offer-handler-lifecycle.html">0017读懂Rust端建连入口</a>。回顾：<a href="0015-datachannel-chat.html">0015运行步骤</a>、<a href="0016-chat-message-trace.html">0016消息追踪</a>。</p></main><nav class="next"><a href="0017-offer-handler-lifecycle.html">上一课：读懂Rust端建连入口</a><a href="../index.html">返回课程目录</a></nav><footer>代码固定于所引提交。先区分本地提交与对端应用确认。</footer></body></html>

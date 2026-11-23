@@ -1,0 +1,50 @@
+2026-11-24 02:35:20.922 JST  INFO datachannel_chat: Listening on http://127.0.0.1:3000
+2026-11-24 02:35:21.737 JST  INFO datachannel_chat: Data channel opened for client 1
+2026-11-24 02:35:21.738 JST  INFO datachannel_chat: Client 1 logged in as Alice
+2026-11-24 02:35:21.952 JST  INFO datachannel_chat: Data channel opened for client 2
+2026-11-24 02:35:21.953 JST  INFO datachannel_chat: Client 2 logged in as Bob
+2026-11-24 02:35:22.019 JST  INFO datachannel_chat: Client 1 forwarded chat id id-1
+2026-11-24 02:35:22.027 JST  INFO datachannel_chat: Client 2 forwarded ack id id-1 receiver Bob
+2026-11-24 02:35:22.035 JST  INFO datachannel_chat: Client 2 forwarded chat id id-2
+2026-11-24 02:35:22.036 JST  INFO datachannel_chat: Client 1 forwarded ack id id-2 receiver Alice
+2026-11-24 02:35:22.249 JST  INFO datachannel_chat: Data channel opened for client 3
+2026-11-24 02:35:22.250 JST  INFO datachannel_chat: Client 3 logged in as Alice
+2026-11-24 02:35:22.451 JST  INFO datachannel_chat: Data channel opened for client 4
+2026-11-24 02:35:22.452 JST  INFO datachannel_chat: Client 4 logged in as Bob
+2026-11-24 02:35:22.528 JST  INFO datachannel_chat: Client 3 forwarded chat id id-3
+2026-11-24 02:35:22.531 JST  INFO datachannel_chat: Client 3 forwarded chat id id-4
+2026-11-24 02:35:22.538 JST  INFO datachannel_chat: Client 4 forwarded ack id id-3 receiver Bob
+2026-11-24 02:35:22.541 JST  INFO datachannel_chat: Client 4 forwarded ack id id-4 receiver Bob
+2026-11-24 02:35:22.750 JST  INFO datachannel_chat: Data channel opened for client 5
+2026-11-24 02:35:22.752 JST  INFO datachannel_chat: Client 5 logged in as Alice
+2026-11-24 02:35:22.969 JST  INFO datachannel_chat: Data channel opened for client 6
+2026-11-24 02:35:22.970 JST  INFO datachannel_chat: Client 6 logged in as Bob
+2026-11-24 02:35:23.036 JST  INFO datachannel_chat: Client 5 forwarded chat id id-5
+2026-11-24 02:35:23.550 JST  INFO datachannel_chat: Client 6 forwarded ack id id-5 receiver Bob
+2026-11-24 02:35:23.983 JST  INFO datachannel_chat: Data channel opened for client 7
+2026-11-24 02:35:23.984 JST  INFO datachannel_chat: Client 7 logged in as Alice
+2026-11-24 02:35:24.186 JST  INFO datachannel_chat: Data channel opened for client 8
+2026-11-24 02:35:24.187 JST  INFO datachannel_chat: Client 8 logged in as Bob
+2026-11-24 02:35:24.251 JST  INFO datachannel_chat: Client 7 forwarded chat id id-6
+2026-11-24 02:35:24.254 JST  INFO datachannel_chat: Client 8 forwarded ack id id-6 receiver Bob
+2026-11-24 02:35:24.259 JST  INFO datachannel_chat: Client 8 forwarded ack id id-6 receiver Bob
+2026-11-24 02:35:24.259 JST  INFO datachannel_chat: Client 8 forwarded ack id unknown-id-not-pending receiver Bob
+2026-11-24 02:35:24.877 JST  INFO datachannel_chat: Data channel opened for client 9
+2026-11-24 02:35:24.878 JST  INFO datachannel_chat: Client 9 logged in as Alice
+2026-11-24 02:35:25.093 JST  INFO datachannel_chat: Data channel opened for client 10
+2026-11-24 02:35:25.093 JST  INFO datachannel_chat: Client 10 logged in as Bob
+2026-11-24 02:35:25.156 JST  INFO datachannel_chat: Client 9 forwarded chat id id-7
+2026-11-24 02:35:25.166 JST  INFO datachannel_chat: Data channel closed for client 9
+2026-11-24 02:35:25.310 JST  INFO datachannel_chat: Data channel opened for client 11
+2026-11-24 02:35:25.310 JST  INFO datachannel_chat: Client 11 logged in as Alice
+2026-11-24 02:35:25.375 JST  INFO datachannel_chat: Client 11 forwarded chat id id-8
+2026-11-24 02:35:25.379 JST  INFO datachannel_chat: Client 10 forwarded ack id id-7 receiver Bob
+2026-11-24 02:35:25.379 JST  INFO datachannel_chat: Client 10 forwarded ack id id-8 receiver Bob
+2026-11-24 02:35:25.614 JST  INFO datachannel_chat: Data channel opened for client 12
+2026-11-24 02:35:25.616 JST  INFO datachannel_chat: Client 12 logged in as Alice
+2026-11-24 02:35:25.810 JST  INFO datachannel_chat: Data channel opened for client 13
+2026-11-24 02:35:25.811 JST  INFO datachannel_chat: Client 13 logged in as Bob
+2026-11-24 02:35:25.878 JST  INFO datachannel_chat: Client 12 forwarded chat id id-9
+2026-11-24 02:35:25.881 JST  INFO datachannel_chat: Client 13 forwarded ack id id-9 receiver Bob
+2026-11-24 02:35:25.882 JST  INFO datachannel_chat: Client 13 forwarded chat id id-10
+2026-11-24 02:35:25.885 JST  INFO datachannel_chat: Client 12 forwarded ack id id-10 receiver Alice

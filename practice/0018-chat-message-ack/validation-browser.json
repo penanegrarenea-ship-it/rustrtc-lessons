@@ -1,0 +1,58 @@
+{
+  "url": "http://127.0.0.1:3000/",
+  "cases": {
+    "bidirectional": {
+      "pass": true,
+      "alice": "Connected as Alice\n[System]: Bob joined the chat\nMe: hello-from-alice（id=[uuid]）收到Bob应用确认\nBob: hello-from-bob（id=[uuid]）",
+      "bob": "Connected as Bob\nAlice: hello-from-alice（id=[uuid]）\nMe: hello-from-bob（id=[uuid]）收到Alice应用确认",
+      "aliceSends": {
+        "chat": 1,
+        "ack": 1
+      },
+      "bobSends": {
+        "chat": 1,
+        "ack": 1
+      }
+    },
+    "sameTextDifferentId": {
+      "pass": true,
+      "idsDistinct": true,
+      "mid": "Connected as Alice\n[System]: Bob joined the chat\nMe: same-body（id=[uuid]）收到Bob应用确认\nMe: same-body（id=[uuid]）本地已提交，尚无对端确认",
+      "after": "Connected as Alice\n[System]: Bob joined the chat\nMe: same-body（id=[uuid]）收到Bob应用确认\nMe: same-body（id=[uuid]）收到Bob应用确认"
+    },
+    "heldThenReleased": {
+      "pass": true,
+      "whileHeldAlice": "Connected as Alice\n[System]: Bob joined the chat\nMe: pause-check（id=[uuid]）本地已提交，尚无对端确认",
+      "whileHeldBob": "Connected as Bob\nAlice: pause-check（id=[uuid]）",
+      "bobHeldCount": 1,
+      "afterReleaseAlice": "Connected as Alice\n[System]: Bob joined the chat\nMe: pause-check（id=[uuid]）收到Bob应用确认"
+    },
+    "duplicateAndUnknown": {
+      "pass": true,
+      "aliceAckSendsBefore": 0,
+      "aliceAckSendsAfter": 0,
+      "aliceAckRecvsBefore": 1,
+      "aliceAckRecvsAfter": 3,
+      "bobAckSendsBefore": 1,
+      "bobAckSendsAfter": 3,
+      "bobAckRecvsBefore": 0,
+      "bobAckRecvsAfter": 0,
+      "meLines": [
+        "Me: once-body（id=[uuid]）收到Bob应用确认"
+      ]
+    },
+    "disconnectClearsPending": {
+      "pass": true,
+      "afterDisconnect": "Connected as Alice\n[System]: Bob joined the chat\nMe: pending-left（id=[uuid]）本地已提交，尚无对端确认\nDisconnected",
+      "afterReconnect": "Connected as Alice\n[System]: Bob joined the chat\nMe: pending-left（id=[uuid]）本地已提交，尚无对端确认\nDisconnected\nConnected as Alice\nMe: after-reconnect（id=[uuid]）收到Bob应用确认"
+    },
+    "formalRetest": {
+      "pass": true,
+      "alice": "Connected as Alice\n[System]: Bob joined the chat\nMe: final-a（id=[uuid]）收到Bob应用确认\nBob: final-b（id=[uuid]）",
+      "bob": "Connected as Bob\nAlice: final-a（id=[uuid]）\nMe: final-b（id=[uuid]）收到Alice应用确认"
+    }
+  },
+  "screenshots": false,
+  "screenshotError": "Page.captureScreenshot timed out on this Chrome; no success screenshot was saved.",
+  "ok": true
+}
