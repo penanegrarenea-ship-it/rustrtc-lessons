@@ -1,0 +1,183 @@
+diff --git a/examples/datachannel_chat.rs b/examples/datachannel_chat.rs
+index ccd8f29..67d0d02 100644
+--- a/examples/datachannel_chat.rs
++++ b/examples/datachannel_chat.rs
+@@ -77,14 +77,24 @@ enum ClientMessage {
+     #[serde(rename = "login")]
+     Login { name: String },
+     #[serde(rename = "chat")]
+-    Chat { content: String },
++    Chat { id: String, content: String },
++    // 0018 teaching addition: the receiver page sends this after it has
++    // appended the chat text. Rust forwards it and does not create it.
++    #[serde(rename = "ack")]
++    Ack { id: String },
+ }
+ 
+ #[derive(Serialize)]
+ #[serde(tag = "type")]
+ enum ServerMessage {
+     #[serde(rename = "chat")]
+-    Chat { sender: String, content: String },
++    Chat {
++        id: String,
++        sender: String,
++        content: String,
++    },
++    #[serde(rename = "ack")]
++    Ack { id: String, receiver: String },
+     #[serde(rename = "system")]
+     System { content: String },
+ }
+@@ -150,9 +160,11 @@ async fn offer(
+                                             text: serde_json::to_string(&sys_msg).unwrap(),
+                                         });
+                                     }
+-                                    ClientMessage::Chat { content } => {
++                                    ClientMessage::Chat { id, content } => {
+                                         if let Some(name) = &my_name {
++                                            info!("Client {} forwarded chat id {}", my_id, id);
+                                             let chat_msg = ServerMessage::Chat {
++                                                id,
+                                                 sender: name.clone(),
+                                                 content,
+                                             };
+@@ -162,6 +174,22 @@ async fn offer(
+                                             });
+                                         }
+                                     }
++                                    ClientMessage::Ack { id } => {
++                                        if let Some(name) = &my_name {
++                                            info!(
++                                                "Client {} forwarded ack id {} receiver {}",
++                                                my_id, id, name
++                                            );
++                                            let ack_msg = ServerMessage::Ack {
++                                                id,
++                                                receiver: name.clone(),
++                                            };
++                                            let _ = tx.send(InternalMessage {
++                                                sender_id: my_id,
++                                                text: serde_json::to_string(&ack_msg).unwrap(),
++                                            });
++                                        }
++                                    }
+                                 }
+                             }
+                         }
+diff --git a/examples/static/chat.html b/examples/static/chat.html
+index ff4ef54..67293f3 100644
+--- a/examples/static/chat.html
++++ b/examples/static/chat.html
+@@ -56,6 +56,9 @@
+ 
+         let pc = null;
+         let dc = null;
++        // 0018: ids this page sent and has not yet matched to an ack.
++        // Cleared on disconnect. Existing lines are left unchanged.
++        const pending = new Map();
+ 
+         function log(msg, type = 'info') {
+             const div = document.createElement('div');
+@@ -63,6 +66,11 @@
+             div.textContent = msg;
+             chatBox.appendChild(div);
+             chatBox.scrollTop = chatBox.scrollHeight;
++            return div;
++        }
++
++        function ownLine(content, id, status) {
++            return "Me: " + content + "（id=" + id + "）" + status;
+         }
+ 
+         connectBtn.onclick = async () => {
+@@ -72,6 +80,7 @@
+                 return;
+             }
+ 
++            pending.clear();
+             connectBtn.disabled = true;
+             nameInput.disabled = true;
+             statusDiv.textContent = "Status: Connecting...";
+@@ -117,13 +126,15 @@
+         };
+ 
+         disconnectBtn.onclick = () => {
++            pending.clear();
+             if (pc) {
+                 pc.close();
+                 pc = null;
+             }
+-            if (dc) {
+-                dc.close();
+-                dc = null;
++            const closing = dc;
++            dc = null;
++            if (closing) {
++                closing.close();
+             }
+             statusDiv.textContent = "Status: Disconnected";
+             msgInput.disabled = true;
+@@ -149,7 +160,21 @@
+                 try {
+                     const msg = JSON.parse(e.data);
+                     if (msg.type === 'chat') {
+-                        log(msg.sender + ": " + msg.content, "received");
++                        log(msg.sender + ": " + msg.content + "（id=" + msg.id + "）", "received");
++                        if (msg.id && channel.readyState === 'open') {
++                            channel.send(JSON.stringify({ type: "ack", id: msg.id }));
++                        }
++                    } else if (msg.type === 'ack') {
++                        const item = pending.get(msg.id);
++                        if (!item || !msg.receiver) {
++                            return;
++                        }
++                        pending.delete(msg.id);
++                        item.el.textContent = ownLine(
++                            item.content,
++                            msg.id,
++                            "收到" + msg.receiver + "应用确认"
++                        );
+                     } else if (msg.type === 'system') {
+                         log("[System]: " + msg.content, "info");
+                     }
+@@ -158,6 +183,10 @@
+                 }
+             };
+             channel.onclose = () => {
++                if (dc !== channel) {
++                    return;
++                }
++                pending.clear();
+                 statusDiv.textContent = "Status: Disconnected";
+                 msgInput.disabled = true;
+                 sendBtn.disabled = true;
+@@ -170,12 +199,23 @@
+ 
+         sendBtn.onclick = () => {
+             const msg = msgInput.value;
+-            if (msg && dc && dc.readyState === 'open') {
+-                const payload = JSON.stringify({ type: "chat", content: msg });
+-                dc.send(payload);
+-                log("Me: " + msg, "sent");
+-                msgInput.value = '';
++            if (!(msg && dc && dc.readyState === 'open')) {
++                return;
++            }
++            if (!crypto.randomUUID) {
++                log("当前浏览器没有 crypto.randomUUID，未发送", "info");
++                return;
++            }
++            const id = crypto.randomUUID();
++            try {
++                dc.send(JSON.stringify({ type: "chat", id: id, content: msg }));
++            } catch (err) {
++                log("发送失败，未得到对端确认", "info");
++                return;
+             }
++            const el = log(ownLine(msg, id, "本地已提交，尚无对端确认"), "sent");
++            pending.set(id, { el: el, content: msg });
++            msgInput.value = '';
+         };
+ 
+         msgInput.onkeypress = (e) => {
