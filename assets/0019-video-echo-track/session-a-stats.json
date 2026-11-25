@@ -1,0 +1,509 @@
+{
+  "session": "session-a",
+  "jstStart": "2026-11-26T02:07:42.219+09:00",
+  "jstEnd": "2026-11-26T02:07:49.474+09:00",
+  "mode": {
+    "value": "echo",
+    "text": "Data Channel + Local Cam Echo"
+  },
+  "hookBeforeClick": {
+    "installed": true,
+    "pageHasWindowPc": false,
+    "typeofPc": "undefined"
+  },
+  "autoplayAlreadyUnpaused": true,
+  "markerSend": {
+    "jst": "2026-11-26T02:07:46.899+09:00",
+    "text": "session-a"
+  },
+  "t1": {
+    "jst": "2026-11-26T02:07:44.295+09:00",
+    "access": {
+      "pageHasWindowPc": false
+    },
+    "pc": {
+      "iceConnectionState": "connected",
+      "iceGatheringState": "complete",
+      "signalingState": "stable",
+      "connectionState": "connected"
+    },
+    "presentedFrames": 2,
+    "binding": {
+      "remoteBoundToReceiver": true,
+      "localAndRemoteSameStream": false
+    },
+    "localElement": {
+      "paused": false,
+      "currentTime": 0.458,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4
+    },
+    "remoteElement": {
+      "paused": false,
+      "currentTime": 0.197717,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4,
+      "quality": {
+        "totalVideoFrames": 2,
+        "droppedVideoFrames": 0
+      },
+      "webkitDecodedFrameCount": 2
+    },
+    "stats": [
+      {
+        "id": "CIT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "COT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "IT01V5002",
+        "type": "inbound-rtp",
+        "kind": "video",
+        "ssrc": 5002,
+        "codecId": "CIT01_96",
+        "packetsReceived": 9,
+        "bytesReceived": 8512,
+        "framesDecoded": 2,
+        "framesReceived": 3,
+        "keyFramesDecoded": 1,
+        "pauseCount": 0,
+        "totalPausesDuration": 0
+      },
+      {
+        "id": "OT01V729981910",
+        "type": "outbound-rtp",
+        "kind": "video",
+        "ssrc": 729981910,
+        "codecId": "COT01_96",
+        "packetsSent": 13,
+        "bytesSent": 8516,
+        "framesEncoded": 5,
+        "framesSent": 5
+      },
+      {
+        "id": "SV1",
+        "type": "media-source",
+        "kind": "video"
+      },
+      {
+        "id": "T01",
+        "type": "transport",
+        "packetsSent": 20,
+        "bytesSent": 11944,
+        "packetsReceived": 19,
+        "bytesReceived": 9760,
+        "dtlsState": "connected",
+        "iceState": "connected",
+        "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80",
+        "dtlsRole": "client",
+        "selectedCandidatePairId": "CPVBKnCemJ_nyDUE5IS"
+      }
+    ],
+    "selectedPair": {
+      "id": "CPVBKnCemJ_nyDUE5IS",
+      "state": "succeeded",
+      "nominated": true,
+      "selected": true,
+      "localType": "host",
+      "remoteType": "host",
+      "protocol": "udp"
+    }
+  },
+  "t2": {
+    "jst": "2026-11-26T02:07:46.807+09:00",
+    "access": {
+      "pageHasWindowPc": false
+    },
+    "pc": {
+      "iceConnectionState": "connected",
+      "iceGatheringState": "complete",
+      "signalingState": "stable",
+      "connectionState": "connected"
+    },
+    "presentedFrames": 45,
+    "binding": {
+      "remoteBoundToReceiver": true,
+      "localAndRemoteSameStream": false
+    },
+    "localElement": {
+      "paused": false,
+      "currentTime": 2.966538,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4
+    },
+    "remoteElement": {
+      "paused": false,
+      "currentTime": 2.707236,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4,
+      "quality": {
+        "totalVideoFrames": 55,
+        "droppedVideoFrames": 1
+      },
+      "webkitDecodedFrameCount": 55
+    },
+    "stats": [
+      {
+        "id": "CIT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "COT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "IT01V5002",
+        "type": "inbound-rtp",
+        "kind": "video",
+        "ssrc": 5002,
+        "codecId": "CIT01_96",
+        "packetsReceived": 81,
+        "bytesReceived": 67316,
+        "framesDecoded": 55,
+        "framesReceived": 56,
+        "keyFramesDecoded": 1,
+        "pauseCount": 0,
+        "totalPausesDuration": 0
+      },
+      {
+        "id": "OT01V729981910",
+        "type": "outbound-rtp",
+        "kind": "video",
+        "ssrc": 729981910,
+        "codecId": "COT01_96",
+        "packetsSent": 85,
+        "bytesSent": 67320,
+        "framesEncoded": 56,
+        "framesSent": 56
+      },
+      {
+        "id": "SV1",
+        "type": "media-source",
+        "kind": "video"
+      },
+      {
+        "id": "T01",
+        "type": "transport",
+        "packetsSent": 98,
+        "bytesSent": 73832,
+        "packetsReceived": 91,
+        "bytesReceived": 70148,
+        "dtlsState": "connected",
+        "iceState": "connected",
+        "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80",
+        "dtlsRole": "client",
+        "selectedCandidatePairId": "CPVBKnCemJ_nyDUE5IS"
+      }
+    ],
+    "selectedPair": {
+      "id": "CPVBKnCemJ_nyDUE5IS",
+      "state": "succeeded",
+      "nominated": true,
+      "selected": true,
+      "localType": "host",
+      "remoteType": "host",
+      "protocol": "udp"
+    }
+  },
+  "deltaSameSsrc": [
+    {
+      "packetsReceived": {
+        "t1": 81
+      },
+      "bytesReceived": {
+        "t1": 67316
+      },
+      "framesDecoded": {
+        "t1": 55
+      },
+      "framesReceived": {
+        "t1": 56
+      },
+      "keyFramesDecoded": {
+        "t1": 1
+      }
+    },
+    {
+      "packetsSent": {
+        "t1": 85
+      },
+      "bytesSent": {
+        "t1": 67320
+      },
+      "framesEncoded": {
+        "t1": 56
+      },
+      "framesSent": {
+        "t1": 56
+      }
+    }
+  ],
+  "pauseCall": {
+    "jst": "2026-11-26T02:07:46.907+09:00",
+    "remotePaused": true
+  },
+  "pauseBefore": {
+    "jst": "2026-11-26T02:07:46.906+09:00",
+    "access": {
+      "pageHasWindowPc": false
+    },
+    "pc": {
+      "iceConnectionState": "connected",
+      "iceGatheringState": "complete",
+      "signalingState": "stable",
+      "connectionState": "connected"
+    },
+    "presentedFrames": 46,
+    "binding": {
+      "remoteBoundToReceiver": true,
+      "localAndRemoteSameStream": false
+    },
+    "localElement": {
+      "paused": false,
+      "currentTime": 3.066812,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4
+    },
+    "remoteElement": {
+      "paused": false,
+      "currentTime": 2.807234,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4,
+      "quality": {
+        "totalVideoFrames": 57,
+        "droppedVideoFrames": 1
+      },
+      "webkitDecodedFrameCount": 57
+    },
+    "stats": [
+      {
+        "id": "CIT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "COT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "IT01V5002",
+        "type": "inbound-rtp",
+        "kind": "video",
+        "ssrc": 5002,
+        "codecId": "CIT01_96",
+        "packetsReceived": 85,
+        "bytesReceived": 69886,
+        "framesDecoded": 57,
+        "framesReceived": 58,
+        "keyFramesDecoded": 1,
+        "pauseCount": 0,
+        "totalPausesDuration": 0
+      },
+      {
+        "id": "OT01V729981910",
+        "type": "outbound-rtp",
+        "kind": "video",
+        "ssrc": 729981910,
+        "codecId": "COT01_96",
+        "packetsSent": 89,
+        "bytesSent": 69890,
+        "framesEncoded": 58,
+        "framesSent": 58
+      },
+      {
+        "id": "SV1",
+        "type": "media-source",
+        "kind": "video"
+      },
+      {
+        "id": "T01",
+        "type": "transport",
+        "packetsSent": 103,
+        "bytesSent": 76631,
+        "packetsReceived": 97,
+        "bytesReceived": 72948,
+        "dtlsState": "connected",
+        "iceState": "connected",
+        "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80",
+        "dtlsRole": "client",
+        "selectedCandidatePairId": "CPVBKnCemJ_nyDUE5IS"
+      }
+    ],
+    "selectedPair": {
+      "id": "CPVBKnCemJ_nyDUE5IS",
+      "state": "succeeded",
+      "nominated": true,
+      "selected": true,
+      "localType": "host",
+      "remoteType": "host",
+      "protocol": "udp"
+    }
+  },
+  "pauseAfter": {
+    "jst": "2026-11-26T02:07:49.420+09:00",
+    "access": {
+      "pageHasWindowPc": false
+    },
+    "pc": {
+      "iceConnectionState": "connected",
+      "iceGatheringState": "complete",
+      "signalingState": "stable",
+      "connectionState": "connected"
+    },
+    "presentedFrames": 46,
+    "binding": {
+      "remoteBoundToReceiver": true,
+      "localAndRemoteSameStream": false
+    },
+    "localElement": {
+      "paused": false,
+      "currentTime": 5.579963,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4
+    },
+    "remoteElement": {
+      "paused": true,
+      "currentTime": 2.811534,
+      "videoWidth": 640,
+      "videoHeight": 480,
+      "readyState": 4,
+      "quality": {
+        "totalVideoFrames": 57,
+        "droppedVideoFrames": 1
+      },
+      "webkitDecodedFrameCount": 57
+    },
+    "stats": [
+      {
+        "id": "CIT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "COT01_96",
+        "type": "codec",
+        "mimeType": "video/VP8",
+        "payloadType": 96,
+        "clockRate": 90000
+      },
+      {
+        "id": "IT01V5002",
+        "type": "inbound-rtp",
+        "kind": "video",
+        "ssrc": 5002,
+        "codecId": "CIT01_96",
+        "packetsReceived": 168,
+        "bytesReceived": 134607,
+        "framesDecoded": 107,
+        "framesReceived": 108,
+        "keyFramesDecoded": 1,
+        "pauseCount": 0,
+        "totalPausesDuration": 0
+      },
+      {
+        "id": "OT01V729981910",
+        "type": "outbound-rtp",
+        "kind": "video",
+        "ssrc": 729981910,
+        "codecId": "COT01_96",
+        "packetsSent": 172,
+        "bytesSent": 134611,
+        "framesEncoded": 108,
+        "framesSent": 108
+      },
+      {
+        "id": "SV1",
+        "type": "media-source",
+        "kind": "video"
+      },
+      {
+        "id": "T01",
+        "type": "transport",
+        "packetsSent": 193,
+        "bytesSent": 145063,
+        "packetsReceived": 181,
+        "bytesReceived": 139569,
+        "dtlsState": "connected",
+        "iceState": "connected",
+        "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80",
+        "dtlsRole": "client",
+        "selectedCandidatePairId": "CPVBKnCemJ_nyDUE5IS"
+      }
+    ],
+    "selectedPair": {
+      "id": "CPVBKnCemJ_nyDUE5IS",
+      "state": "succeeded",
+      "nominated": true,
+      "selected": true,
+      "localType": "host",
+      "remoteType": "host",
+      "protocol": "udp"
+    }
+  },
+  "pauseDeltaSameSsrc": [
+    {
+      "packetsReceived": {
+        "t1": 168
+      },
+      "bytesReceived": {
+        "t1": 134607
+      },
+      "framesDecoded": {
+        "t1": 107
+      },
+      "framesReceived": {
+        "t1": 108
+      },
+      "keyFramesDecoded": {
+        "t1": 1
+      }
+    },
+    {
+      "packetsSent": {
+        "t1": 172
+      },
+      "bytesSent": {
+        "t1": 134611
+      },
+      "framesEncoded": {
+        "t1": 108
+      },
+      "framesSent": {
+        "t1": 108
+      }
+    }
+  ]
+}
