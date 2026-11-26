@@ -1,0 +1,192 @@
+{
+  "session": "cloud-linux-vm",
+  "date": "2026-11-27",
+  "timezone": "Asia/Tokyo",
+  "hookInstalledBeforeStartRecording": true,
+  "pageHasWindowPc": false,
+  "note": "This is a field-whitelist excerpt of one passing getStats pair. It omits SDP, ICE passwords, fingerprints, certificates, and unused candidates. No inbound-rtp existed. This demo does not play a remote audio track. Addresses are the selected host UDP pair from that cloud VM run.",
+  "t1": {
+    "capturedAt": "2026-11-27T02:47:34.933+09:00",
+    "timezone": "Asia/Tokyo",
+    "statusText": "Status: connected",
+    "connectionState": "connected",
+    "iceConnectionState": "connected",
+    "iceGatheringState": "complete",
+    "signalingState": "stable",
+    "transport": {
+      "id": "T01",
+      "type": "transport",
+      "iceState": "connected",
+      "dtlsState": "connected",
+      "selectedCandidatePairId": "CP6Yp0vaMj_h/pxtvm+",
+      "iceRole": "controlling",
+      "dtlsRole": "client",
+      "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80",
+      "tlsVersion": "FEFD",
+      "selectedCandidatePairChanges": 1,
+      "packetsSent": 495,
+      "bytesSent": 59970,
+      "packetsReceived": 6,
+      "bytesReceived": 776
+    },
+    "selectedCandidatePair": {
+      "id": "CP6Yp0vaMj_h/pxtvm+",
+      "type": "candidate-pair",
+      "state": "succeeded",
+      "nominated": true,
+      "writable": true,
+      "localCandidateId": "I6Yp0vaMj",
+      "remoteCandidateId": "Ih/pxtvm+",
+      "packetsSent": 495,
+      "bytesSent": 59970,
+      "packetsReceived": 6,
+      "bytesReceived": 776,
+      "currentRoundTripTime": 0.001
+    },
+    "selectedLocalCandidate": {
+      "id": "I6Yp0vaMj",
+      "type": "local-candidate",
+      "candidateType": "host",
+      "protocol": "udp",
+      "address": "172.30.0.2",
+      "port": 59160
+    },
+    "selectedRemoteCandidate": {
+      "id": "Ih/pxtvm+",
+      "type": "remote-candidate",
+      "candidateType": "host",
+      "protocol": "udp",
+      "address": "172.30.0.2",
+      "port": 46825
+    },
+    "outboundAudio": {
+      "id": "OT01A489390201",
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "mediaType": "audio",
+      "ssrc": 489390201,
+      "mid": "0",
+      "codecId": "COT01_111_minptime=10;useinbandfec=1",
+      "packetsSent": 490,
+      "bytesSent": 39581,
+      "headerBytesSent": 13720,
+      "retransmittedPacketsSent": 0,
+      "retransmittedBytesSent": 0,
+      "nackCount": 0,
+      "active": true
+    },
+    "codec": {
+      "id": "COT01_111_minptime=10;useinbandfec=1",
+      "type": "codec",
+      "mimeType": "audio/opus",
+      "payloadType": 111,
+      "clockRate": 48000
+    },
+    "mediaPlayout": {
+      "id": "AP",
+      "type": "media-playout",
+      "kind": "audio",
+      "totalSamplesCount": 0,
+      "totalSamplesDuration": 0
+    },
+    "inboundRtpPresent": false,
+    "statTimestamp": 1795715254935.009
+  },
+  "t2": {
+    "capturedAt": "2026-11-27T02:47:39.945+09:00",
+    "timezone": "Asia/Tokyo",
+    "statusText": "Status: connected",
+    "connectionState": "connected",
+    "iceConnectionState": "connected",
+    "iceGatheringState": "complete",
+    "signalingState": "stable",
+    "transport": {
+      "id": "T01",
+      "type": "transport",
+      "iceState": "connected",
+      "dtlsState": "connected",
+      "selectedCandidatePairId": "CP6Yp0vaMj_h/pxtvm+",
+      "iceRole": "controlling",
+      "dtlsRole": "client",
+      "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80",
+      "tlsVersion": "FEFD",
+      "selectedCandidatePairChanges": 1,
+      "packetsSent": 746,
+      "bytesSent": 89790,
+      "packetsReceived": 6,
+      "bytesReceived": 776
+    },
+    "selectedCandidatePair": {
+      "id": "CP6Yp0vaMj_h/pxtvm+",
+      "type": "candidate-pair",
+      "state": "succeeded",
+      "nominated": true,
+      "writable": true,
+      "localCandidateId": "I6Yp0vaMj",
+      "remoteCandidateId": "Ih/pxtvm+",
+      "packetsSent": 746,
+      "bytesSent": 89790,
+      "packetsReceived": 6,
+      "bytesReceived": 776,
+      "currentRoundTripTime": 0.001
+    },
+    "selectedLocalCandidate": {
+      "id": "I6Yp0vaMj",
+      "type": "local-candidate",
+      "candidateType": "host",
+      "protocol": "udp",
+      "address": "172.30.0.2",
+      "port": 59160
+    },
+    "selectedRemoteCandidate": {
+      "id": "Ih/pxtvm+",
+      "type": "remote-candidate",
+      "candidateType": "host",
+      "protocol": "udp",
+      "address": "172.30.0.2",
+      "port": 46825
+    },
+    "outboundAudio": {
+      "id": "OT01A489390201",
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "mediaType": "audio",
+      "ssrc": 489390201,
+      "mid": "0",
+      "codecId": "COT01_111_minptime=10;useinbandfec=1",
+      "packetsSent": 740,
+      "bytesSent": 59831,
+      "headerBytesSent": 20720,
+      "retransmittedPacketsSent": 0,
+      "retransmittedBytesSent": 0,
+      "nackCount": 0,
+      "active": true
+    },
+    "codec": {
+      "id": "COT01_111_minptime=10;useinbandfec=1",
+      "type": "codec",
+      "mimeType": "audio/opus",
+      "payloadType": 111,
+      "clockRate": 48000
+    },
+    "mediaPlayout": {
+      "id": "AP",
+      "type": "media-playout",
+      "kind": "audio",
+      "totalSamplesCount": 0,
+      "totalSamplesDuration": 0
+    },
+    "inboundRtpPresent": false,
+    "statTimestamp": 1795715259947.353
+  },
+  "deltaSameOutboundSsrc": {
+    "id": "OT01A489390201",
+    "ssrc": 489390201,
+    "packetsSent": 250,
+    "bytesSent": 20250,
+    "headerBytesSent": 7000,
+    "elapsedMsFromStatTimestamp": 5012.343994140625
+  }
+}
