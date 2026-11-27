@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第23课：sip() 加上 IceLite 与 Sdes（给带 ICE 的 SIP 话机协商）</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第23课 · 20–30分钟 · <a href="../index.html">课程目录</a></header><nav aria-label="本课目录"><a href="#section-1">1. 为什么在第22课的 sip()+Sdes 之后还要改 connectivity</a> · <a href="#section-2">2. IceLite 与 Sdes 在 API 和 SDP 里一起改了什么</a> · <a href="#section-3">3. 跑官方测试，读本轮结果</a> · <a href="#section-4">4. 答案怎样同时带上 ICE 与 crypto，本端为什么是 Controlled</a> · <a href="#section-5">5. 容易误判的边界</a> · <a href="#section-6">6. 交一张证据卡，独立自测</a></nav><main><h1>sip() 加上 IceLite 与 Sdes：给带 ICE 的 SIP 话机协商（a=ice-lite 与 a=crypto）</h1>
+<p>第21课的默认 <code>sip()</code> 是 <code>Sdp</code> × <code>None</code>：协议 <code>RTP/AVP</code>，没有 ICE 属性，也没有 <code>a=crypto</code>。第22课只改 <code>keying = Keying::Sdes</code>：协议变成 <code>RTP/SAVP</code>，有媒体级 <code>a=crypto</code>，选路仍是 <code>Sdp</code>，SDP 里还是没有 ICE 属性。README 配方3针对带 ICE 的 SIP 话机（例如 Linphone）：仍从 <code>sip()</code> 起步，再同时设 <code>connectivity = Connectivity::IceLite</code> 与 <code>keying = Keying::Sdes</code>。本课只教这一条配方的协商证据，不开始下一课，不重讲第21、22课正文。</p>
+<p>先分清这件事：<strong>本课讲 IceLite + SDES-SRTP 的 API 与 SDP 协商证据，不是已经从话机收到 SRTP 音频。</strong><code>examples/</code> 下没有 IceLite+Sdes 的官方示例。可运行的载体是同一固定提交上的官方库测试，主要是 <code>srtp_mode_ice_lite_answer_has_ice_attributes</code>，不要为了补一个学生二进制去改上游。下面的 Windows 步骤供你操作，不是 Windows 成功记录。不要把 <code>IceLite</code> 写成全量 ICE，不要把 <code>Sdes</code> 写成 Dtls，不要把配方3写成 <code>webrtc()</code>。</p>
+<p>本课约20–30分钟。读 API 与三课 SDP 对照 8 分钟，按步骤跑官方测试并核对断言 8 分钟，证据卡与自测 8–10 分钟。可从<a href="0022-sdes-srtp.html">第22课</a>直接进来。不重讲<a href="0013-sdp-connectivity-keying.html">第13课</a>的 SDP 判断方法，也不重讲第9–12课的 SRTP 包内部或 DTLS。不教 SIP 信令，不写生产 SIP UA。第1课的配置地图见<a href="0001-overview.html">第1课第3节</a>。</p>
+<p>上游固定提交：<code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。站点页眉仍是 0.6.4 / e13b5f2，本课正文只引用这个固定提交。本课<strong>不打补丁，不改上游原例或测试。</strong></p>
+<p>2026-11-27，Asia/Tokyo（JST）。已在这台 Linux 教学电脑（Debian GNU/Linux 13，kernel 6.12.113+，rustc/cargo 1.100.0）跑过官方库测试：19:43:51–19:43:52 JST，<code>srtp_mode_ice_lite_answer_has_ice_attributes</code> 与对照 <code>rtp_mode_ice_lite_sdp_attributes</code> 全部通过，退出码 0。测试 stdout 没有打印 <code>a=crypto</code> 密钥或 <code>ice-pwd</code>。可选的 <code>ice_lite_sdes</code>（<code>--exact</code>）于 19:44:49–19:44:52 JST 通过，退出码 0；那是两个本地 <code>PeerConnection</code> 在回环上互发媒体，不是 Linphone，不是公网。另有标明来源的诊断程序（不是官方测试 stdout）给出脱敏 SDP 摘录，见第3节。运行后 HEAD 仍是上述固定提交。Windows、真实话机、Linphone、公网未测。</p>
+<p><a href="0022-sdes-srtp.html">上一课：0022 sip()+Sdes 与 SDES-SRTP 协商</a> · <a href="../index.html">目录</a> · <a href="../assets/0023-icelite-sdes/VALIDATION.md">本课脱敏验证摘要</a> · <a href="../assets/0023-icelite-sdes/sdp-excerpts.md">脱敏 SDP 摘录</a></p>
+<h2 id="section-1">1. 为什么在第22课的 sip()+Sdes 之后还要改 connectivity</h2>
+<p>第22课的对端是不走 ICE 的 SDES-SRTP：协议 <code>RTP/SAVP</code>，有 <code>a=crypto</code>，没有 <code>a=ice-ufrag</code> / <code>a=candidate</code>。对应配置是 <code>sip()</code> 再只改 <code>Keying::Sdes</code>，选路仍是 <code>Connectivity::Sdp</code>。</p>
+<p>配方3的对端是带 ICE 的 SIP 话机。密钥还是按 <a href="https://www.rfc-editor.org/rfc/rfc4568.html">RFC 4568</a> 用 <code>a=crypto</code> 交换，但媒体路径要按 ICE 来找：本端做 ICE-lite，应答对端全量 ICE 的连通性检查并跟随其提名。所以起点还是 <code>sip()</code>，这一次要改两个字段：<code>connectivity = Connectivity::IceLite</code> 与 <code>keying = Keying::Sdes</code>。不要只用第22课的配置去对接这类话机，也不要把配方3改成 <code>webrtc()</code>——那是全量 <code>Connectivity::Ice</code> 加 <code>Keying::Dtls</code>，不是本课。</p>
+<p>README 把这条写成：“SIP phone with ICE (e.g. Linphone)” 从 <code>sip()</code> 起步，然后 <code>connectivity = Connectivity::IceLite</code>，<code>keying = Keying::Sdes</code>。出处：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a> 配方表第246行。</p>
+<p><code>sip()</code> 本身不会替你改这两个字段，它的预设仍是 <code>Sdp</code> × <code>None</code>：</p>
+<pre><code class="language-rust">    /// For a SIP peer (a trunk, a phone, a PBX): the address of its SDP (no
+    /// ICE), plain RTP, no WebRTC header extensions, RTCP multiplexing when
+    /// the peer accepts it, a transport for each kind of media without
+    /// BUNDLE. Change `keying` for SDES-SRTP, `connectivity` for ICE-lite.
+    pub fn sip() -> Self {
+        Self::new(
+            Connectivity::Sdp,
+            Keying::None,
+            false,
+            RtcpMuxPolicy::Negotiate,
+            BundlePolicy::Balanced,
+        )
+    }</code></pre>
+<p>摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L977-L989">config.rs 977–989行</a> @ f1b59bf。注释已经写明：Change <code>keying</code> for SDES-SRTP，<code>connectivity</code> for ICE-lite。</p>
+<h2 id="section-2">2. IceLite 与 Sdes 在 API 和 SDP 里一起改了什么</h2>
+<p><code>Connectivity::IceLite</code> 定义在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L153-L155">config.rs 153–155行</a>：ICE-lite（RFC 8445 §2.5），是一种直接传输，应答全量 ICE 对端的检查并跟随其提名。它不是 <code>Connectivity::Ice</code>。<code>Keying::Sdes</code> 仍是第22课那个枚举成员：SDES、<code>a=crypto</code>（RFC 4568）、RTP/SAVP（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L171-L178">171–178行</a>）。两种等价写法：</p>
+<pre><code class="language-rust">let mut config = RtcConfiguration::sip();
+config.connectivity = Connectivity::IceLite;
+config.keying = Keying::Sdes;</code></pre>
+<pre><code class="language-rust">let config = RtcConfigurationBuilder::sip()
+    .connectivity(Connectivity::IceLite)
+    .keying(Keying::Sdes)
+    .build();</code></pre>
+<p>Builder 的 <code>.connectivity(...)</code> 在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1216-L1220">config.rs 1216–1220行</a>，<code>.keying(...)</code> 在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1222-L1225">1222–1225行</a>，<code>RtcConfigurationBuilder::sip()</code> 在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1127-L1132">1127–1132行</a>。扩展开关、<code>rtcp_mux_policy</code>、<code>bundle_policy</code> 都不因这一步而改，仍是 <code>sip()</code> 的预设。</p>
+<p><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">RFC 8445 §2.5</a> 规定：lite 实现只用 host 候选，不主动发起连通性检查，也不跑全量状态机，但必须能应答检查。<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.3">RFC 8839 §5.3</a> 规定 <code>a=ice-lite</code> 只能出现在会话级，用来声明本端是 lite。源码注释与实现一致：<code>sdp_is_ice_lite</code> 只看会话级（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L1592-L1598">1592–1598行</a>），<code>build_description</code> 把 <code>ice-lite</code> 写进会话属性，把 <code>ice-ufrag</code> / <code>ice-pwd</code> / <code>candidate</code> 写进媒体属性（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L5881-L5913">5881–5913行</a>）。<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.4">RFC 8839 §5.4</a> 允许 ufrag/pwd 出现在会话级或媒体级；<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.1">§5.1</a> 规定 <code>a=candidate</code> 只能在媒体级，host 候选必须省略 <code>raddr</code> / <code>rport</code>。</p>
+<figure class="diagram">
+<pre>图1 · 三条 SIP 配方在 SDP 里差在哪
+第21课 sip()：Sdp × None
+  → 协议 RTP/AVP，无 ICE 属性，无 a=crypto
+第22课 sip()+Sdes：Sdp × Sdes
+  → 协议 RTP/SAVP，有媒体级 a=crypto，仍无 ICE 属性
+本课 sip()+IceLite+Sdes：IceLite × Sdes
+  → 协议 RTP/SAVP，会话级 a=ice-lite，
+    媒体级 a=ice-ufrag / a=ice-pwd / a=candidate，以及 a=crypto
+这是协商字段对照，不是抓包图</pre>
+<figcaption>对照只标本课需要的字段，不重讲前两课正文。</figcaption>
+</figure>
+<h2 id="section-3">3. 跑官方测试，读本轮结果</h2>
+<h3>3.1 在全新目录运行官方库测试</h3>
+<p>以下命令由你在 Windows 11 PowerShell 执行。沿用已有 Git 和 Rust，不在这一课重配系统环境。目录存在就停止，不覆盖你原来的工程。这是给你操作的步骤，<strong>不是本课已经在 Windows 上跑通的记录</strong>。在这台 Linux 教学电脑上，等价的两条 <code>cargo +1.100.0 test --lib</code> 于 2026-11-27 19:43:51–19:43:52 JST 全部以退出码 0 结束；因为测试二进制此前已经编过，两次 <code>Finished</code> 分别约为 0.48、0.17 秒，测试本身 0.01、0.02 秒。编译保留原库三条 <code>fetch_update</code> 弃用警告，不是本课改了依赖。</p>
+<p>fresh clone 上第一次编译会更久。rustc 1.100.0 的测试过滤器按子串匹配；不要把 <code>|</code> 写成“或”。本轮因此把主测试和对照分成下面两条命令。</p>
+<pre><code class="language-powershell">$ErrorActionPreference = "Stop"
+$root = Join-Path $HOME "rustrtc-0023-icelite-sdes"
+if (Test-Path $root) { throw "目录已存在，请换全新目录名，不要覆盖。" }
+git clone https://github.com/restsend/rustrtc.git $root
+if ($LASTEXITCODE -ne 0) { throw "克隆失败，停止。" }
+Set-Location $root
+$sha = "f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa"
+git checkout --detach $sha
+if ($LASTEXITCODE -ne 0) { throw "检出固定提交失败，停止。" }
+cargo +1.100.0 test --lib -- --nocapture --test-threads=1 srtp_mode_ice_lite_answer_has_ice_attributes
+if ($LASTEXITCODE -ne 0) { throw "srtp_mode_ice_lite_answer_has_ice_attributes 失败，停止。" }
+cargo +1.100.0 test --lib -- --nocapture --test-threads=1 rtp_mode_ice_lite_sdp_attributes
+if ($LASTEXITCODE -ne 0) { throw "rtp_mode_ice_lite_sdp_attributes 失败，停止。"</code></pre>
+<p>Linux 教学电脑上已核对的等价命令，是在固定提交工作树根目录执行同样的两条 <code>cargo +1.100.0 test --lib -- --nocapture --test-threads=1 …</code>。跑完确认 <code>git rev-parse HEAD</code> 仍是上述固定提交。</p>
+<p>可选：若你还想看两个本地 <code>PeerConnection</code> 是否能在回环上互发媒体，可再跑：</p>
+<pre><code class="language-powershell">cargo +1.100.0 test --test connectivity_keying -- --nocapture --test-threads=1 --exact ice_lite_sdes
+if ($LASTEXITCODE -ne 0) { throw "ice_lite_sdes 失败，停止。"</code></pre>
+<p>必须加 <code>--exact</code>。过滤器 <code>ice_lite_sdes</code> 若只按子串匹配，还会跑到 <code>ice_offers_to_ice_lite_sdes</code>。本课不要求跑九格组合。这个可选测试不是 Linphone，不是真实话机，也不是公网；配置从 <code>RtcConfiguration::webrtc()</code> 覆盖字段，两端都是 IceLite × Sdes，不是从 <code>sip()</code> 起步。在这台 Linux 教学电脑上，该命令于 19:44:49–19:44:52 JST 退出 0，<code>Finished</code> 约 3.30 秒（编了集成测试二进制），测试本身 0.01 秒，1 passed，20 filtered out。stdout 同样没有打印密钥或口令。</p>
+<h3>3.2 本轮官方测试实际断言了什么</h3>
+<p>两个库测试全部 <code>ok</code>，退出码 0，stdout 没有打印 <code>inline:</code> 密钥或 <code>ice-pwd</code>。它们证明的是协商字段和角色，不是从话机收包。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>测试（peer_connection.rs）</th>
+<th>本轮</th>
+<th>实际断言（不是“已收到媒体”）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>srtp_mode_ice_lite_answer_has_ice_attributes</code>（14543–14577行）</td>
+<td>通过</td>
+<td>配方3 的 answer 含 <code>a=ice-lite</code>、<code>a=ice-ufrag:</code>、<code>a=ice-pwd:</code>、<code>a=candidate:</code>、<code>a=crypto:</code>；ICE 角色为 <code>Controlled</code>。未断言 <code>m=</code> 协议或载荷类型</td>
+</tr>
+<tr>
+<td><code>rtp_mode_ice_lite_sdp_attributes</code>（13220–13277行）</td>
+<td>通过</td>
+<td>对照：<code>sip()</code>+IceLite 且保持 <code>Keying::None</code> 的 offer 有上述 ICE 属性，协议为 RTP/AVP，无指纹</td>
+</tr>
+</tbody>
+</table></div>
+<p>主测试的远程 offer 是 RTP/SAVP，带 <code>a=crypto</code>、ICE 凭证和一条 host 候选，没有 <code>a=ice-lite</code>（全量 ICE 话机一侧的形状）。本课不转载夹具里的密钥和口令，引测试时只写 <code>inline:&lt;redacted&gt;</code> 与占位口令。</p>
+<p>这些测试通过时不打印完整 SDP。下面的脱敏摘录来自教学诊断程序：复用 <code>sip()</code> + <code>IceLite</code> + <code>Sdes</code> 走 <code>create_answer</code>，远程 offer 使用运行时生成的密钥和凭证，<strong>不是官方测试的 stdout</strong>，也不是要求你运行的作业。诊断于 2026-11-27 19:46:21–19:46:55 JST 退出 0，墙钟约 34 秒。地址、端口、会话标识、ufrag、口令和密钥已删除。完整未脱敏文本只留在非公开验证目录。</p>
+<pre><code class="language-sdp">v=0
+o=- [sess] [vers] IN IP4 [addr]
+s=-
+c=IN IP4 [addr]
+t=0 0
+a=ice-lite
+m=audio [port] RTP/SAVP 111
+a=ice-ufrag:[ufrag]
+a=ice-pwd:[ice-pwd]
+a=candidate:[foundation] 1 udp [prio] [addr] [port] typ host
+a=candidate:[foundation] 2 udp [prio] [addr] [port] typ host
+a=sendrecv
+a=end-of-candidates
+a=rtpmap:111 opus/48000/2
+a=fmtp:111 minptime=10;useinbandfec=1;stereo=1
+a=rtcp:[rtcp-port]
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:&lt;redacted&gt;</code></pre>
+<p>阅读要点：<code>a=ice-lite</code> 在会话级；协议是 <code>RTP/SAVP</code>；媒体级同时有 ICE 凭证、两条 <code>typ host</code> 候选（组件 1 与 2，传输写作 <code>udp</code>）和 <code>a=crypto</code>。因诊断 offer 没有 <code>a=rtcp-mux</code>，答案只有 <code>a=rtcp:</code>，仍为两个组件保留候选。诊断答案列出的是默认 Opus PT 111，不是 offer 里的 PCMU 0；官方测试未断言编解码交叉。库生成的配方3 offer 还带生存期 <code>|2^31</code>，以及 <code>a=rtcp-mux</code>；对照的 IceLite+None offer 则是 <code>RTP/AVP</code> 且没有 <code>a=crypto</code>。完整摘录见 <a href="../assets/0023-icelite-sdes/sdp-excerpts.md">脱敏 SDP 摘录</a>。</p>
+<h2 id="section-4">4. 答案怎样同时带上 ICE 与 crypto，本端为什么是 Controlled</h2>
+<p>配方3要同时做两件事：按第22课的 SDES 规则写出媒体级 <code>a=crypto</code> 和 <code>RTP/SAVP</code>，再按 ICE-lite 写出会话级 <code>a=ice-lite</code> 与媒体级凭证、候选，好让对端的全量 ICE 来检查本端。</p>
+<p><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.1">RFC 8445 §6.1.1</a> 规定角色：一方是全量实现、一方是 lite 时，全量一方必须是 Controlling，lite 一方必须是 Controlled；lite 只监听并应答检查，再按提名结束 ICE。主测试的远程 offer 没有 <code>a=ice-lite</code>，所以本端作为 IceLite answerer 应取 Controlled。实现上，<code>create_answer</code> 在对端不是 lite 时把角色设为 Controlled（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L1574-L1586">1574–1586行</a>）；IceLite 直接传输在写入对端参数时也会再设一次 Controlled（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L3457-L3466">3457–3466行</a>）。官方测试断言了 <code>pc.inner.ice_transport.role() == Controlled</code>。</p>
+<p>SDP 怎么写出来：<code>build_description</code> 在 <code>connectivity == IceLite</code> 时，若会话里还没有 <code>ice-lite</code> 就补上，再把本段的 ufrag、pwd 和候选行写入媒体属性（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L5881-L5913">5881–5913行</a>）。同一份描述里的 <code>a=crypto</code> 仍走第22课已经看过的 SDES 分支，本课不重讲 tag、套件和 MKI 细节。<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a> 仍然要求：<code>a=crypto</code> 是媒体级属性，SDP 里的密钥材料必须另有协议保护。</p>
+<figure class="diagram">
+<pre>图2 · 带 ICE 的话机 offer 到本端 IceLite 答案
+对端 offer（全量 ICE 话机示意）：
+  RTP/SAVP + a=crypto + ice-ufrag / ice-pwd / candidate
+  没有 a=ice-lite
+        ↓  sip() + IceLite + Sdes，create_answer
+本端 answer：
+  会话级 a=ice-lite
+  媒体级 a=ice-ufrag / a=ice-pwd / a=candidate 与 a=crypto
+  协议 RTP/SAVP；本端角色 Controlled
+官方测试核这些字段与角色；不是一次话机收包</pre>
+<figcaption>这是协商路径示意，不是抓包图。</figcaption>
+</figure>
+<h2 id="section-5">5. 容易误判的边界</h2>
+<ul>
+<li><strong>不要粘贴真实密钥或 ICE 口令。</strong><code>inline:</code> 后面是明文密钥材料，<code>ice-pwd</code> 是 ICE 口令。公开课文、摘录、证据卡只用 <code>inline:&lt;redacted&gt;</code> 与占位口令。上游测试夹具里出现过的密钥和口令，本课不转载。</li>
+<li><strong>IceLite 不是全量 ICE。</strong><code>Connectivity::IceLite</code> 是直接传输，应答检查并跟随提名，只用 host 候选。全量收集、主动检查和提名是 <code>Connectivity::Ice</code>，也是 <code>webrtc()</code> 的预设。不要把本课写成已经跑过全量 ICE。</li>
+<li><strong>Sdes 不是 Dtls，配方3 不是 webrtc()。</strong>配方3 只在 <code>sip()</code> 上改 <code>IceLite</code> 与 <code>Sdes</code>。指纹、<code>a=setup</code> 和 DTLS 握手属于 <code>Keying::Dtls</code>。</li>
+<li><strong>测试通过不等于已经从话机收到媒体。</strong>主路径两个库测试核的是协商字段和 Controlled 角色。没有真实话机，也没有公网。<code>Connected</code> 同样不是话机收包证据。</li>
+<li><strong>可选的 ice_lite_sdes 不是 Linphone。</strong>它是两个本地 <code>PeerConnection</code> 在回环上互发媒体，配置从 <code>webrtc()</code> 覆盖字段，两端都是 IceLite，不是从 <code>sip()</code> 起步。不要把它写成公网或真实话机成功。</li>
+<li><strong>不要宣称九格都跑过。</strong>库称任意 Connectivity 可配任意 Keying；那是库的声明。本课只跑了配方3主测试、IceLite+None 对照，以及可选的两端 IceLite × Sdes 回环互发。</li>
+<li><strong>没有 rtcp-mux 时，只有 RTP 组件的提名可以选择媒体对。</strong>测试 <code>ice_lite_rtcp_component_nomination_keeps_rtp_pair</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L14580-L14696">14580–14696行</a>）的注释写明：Linphone 会对 RTP（组件 1）和 RTCP（组件 2）都做检查并提名；若误把 RTCP 提名当成媒体对，RTP 会从本端 RTCP 端口发出，对端也可能落到 RTCP 端口，按源端口过滤的 NAT 会丢掉这种包。诊断答案在对端没有 <code>a=rtcp-mux</code> 时写出了组件 1 和 2 两条 host 候选，并保留 <code>a=rtcp:</code>。本课没有跑这个测试，它不是主路径。</li>
+<li><strong>没有官方示例文件。</strong>不要把第21课的 <code>rtp_track_event</code> 或第22课的测试改成 IceLite+Sdes 再当成官方示例。不要为了让某条路径变绿去改上游。</li>
+<li><strong>不讲 SIP 信令，不做生产 UA。</strong>把 SDP 放进 INVITE / 200 OK 是 rsipstack 和应用的事。SDP 本身还需要另外的安全保护，见 RFC 4568 与 ICE 口令保护。</li>
+</ul>
+<h2 id="section-6">6. 交一张证据卡，独立自测</h2>
+<figure class="diagram">
+<pre>图3 · 什么算本轮证据，什么不算
+算：两个官方库测试在 Linux 教学电脑上全部通过，退出码 0（19:43:51–19:43:52 JST）
+算：主测试断言 answer 含 ice-lite、ufrag、pwd、candidate、crypto，且角色 Controlled
+算：对照测试断言 IceLite+None 的 offer 有 ICE 属性、协议 RTP/AVP、无指纹
+算：可选 ice_lite_sdes 在两个本地 PeerConnection 的回环上通过（19:44:49–19:44:52 JST）
+算：标明来源的脱敏诊断 SDP（协议与 ICE/crypto 位置；密钥和口令已删除）
+不算：官方测试 stdout 里的完整 SDP（本轮本来就没有打印）
+不算：真实话机、Linphone、公网、Windows 成功、已经从话机收到 SRTP
+不算：九格 Connectivity × Keying 都已跑过，或已经掌握</pre>
+<figcaption>证据边界只对这次固定提交上的运行和测试负责，不是掌握声明。</figcaption>
+</figure>
+<h3>6.1 证据卡</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>你要填写的证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>版本与环境</td>
+<td>上游 SHA、实际系统/工具链、真实运行或只读了课文</td>
+</tr>
+<tr>
+<td>配置写法</td>
+<td>是否从 sip() 起步再同时设 IceLite 与 Sdes；有没有误用 webrtc() 或 Dtls</td>
+</tr>
+<tr>
+<td>官方测试</td>
+<td>两条库测试的退出码；是否均为 ok；stdout 有没有泄出密钥或 ice-pwd</td>
+</tr>
+<tr>
+<td>SDP 形状</td>
+<td>是否同时有会话级 a=ice-lite、媒体级 ICE 凭证/候选与 a=crypto；协议是否为 RTP/SAVP</td>
+</tr>
+<tr>
+<td>角色</td>
+<td>对没有 a=ice-lite 的全量 ICE offer，本端是否为 Controlled</td>
+</tr>
+<tr>
+<td>密钥与口令保护</td>
+<td>分享前是否已把 inline 材料与 ice-pwd 写成 redacted 或无效占位</td>
+</tr>
+<tr>
+<td>结论边界</td>
+<td>已证实哪一步；有没有把测试通过、回环互发或诊断 SDP 写成话机收包成功</td>
+</tr>
+</tbody>
+</table></div>
+<p>你的退出码若与本轮相同，只说明同一提交上这些官方测试仍然通过，不是已经掌握。分享卡片前，删掉 ICE 密码、ufrag、指纹、真实 <code>a=crypto</code> 密钥和完整未脱敏 SDP。本课不需要这些秘密来批改。</p>
+<h3>6.2 八道自测</h3>
+<p>先遮住答案。每题都可单独判断，不需要等待聊天回复下一题。八道答案篇幅相同。</p>
+<h3>第1题</h3>
+<p>为什么第22课只改 <code>keying</code> 还不够，本课还要把 <code>connectivity</code> 改成 <code>IceLite</code>？</p>
+<details>
+<summary>显示第1题答案</summary>
+<p>第22课的sip()+Sdes只改密钥，选路仍是Sdp，其SDP里没有ICE属性。配方3要对带ICE的SIP话机，须从sip()起步再同时设Connectivity::IceLite与Keying::Sdes。不要改回webrtc()，也不要只改其中一个字段。</p>
+</details>
+<h3>第2题</h3>
+<p>配方3的两种 API 写法是什么？<code>examples/</code> 里有没有对应的官方示例？</p>
+<details>
+<summary>显示第2题答案</summary>
+<p>两种写法等价：先调用sip()再设connectivity为IceLite、keying为Sdes，或用Builder从sip()起再链式设置这两个字段。examples里没有该配方的官方示例。本课可运行的载体是同一提交上的官方库测试，不要为了补示例去改上游。</p>
+</details>
+<h3>第3题</h3>
+<p>本端 answer 或本地 SDP 必须同时出现哪些协商证据？和前两课差在哪？</p>
+<details>
+<summary>显示第3题答案</summary>
+<p>本端生成的SDP必须同时具备会话级a=ice-lite，媒体级ice-ufrag、ice-pwd、candidate和a=crypto，协议为RTP/SAVP。这与第21课无ICE无crypto、第22课有crypto无ICE对照。不要把指纹写成配方3的证据。</p>
+</details>
+<h3>第4题</h3>
+<p>本轮官方库测试在什么时候、以什么结果通过？它们证明了什么、没证明什么？</p>
+<details>
+<summary>显示第4题答案</summary>
+<p>2026年11月27日19:43:51至19:43:52（日本标准时间），Linux教学电脑上两个官方库测试全部通过，退出码是0。主测试断言了ICE与crypto字段以及Controlled角色。stdout未打印密钥或口令。这不是已从话机收到SRTP的证据。</p>
+</details>
+<h3>第5题</h3>
+<p>本端 Ice-lite 为什么是 Controlled？</p>
+<details>
+<summary>显示第5题答案</summary>
+<p>RFC8445第6.1.1节规定：一方全量ICE、一方ICE-lite时，lite须取Controlled。对端无a=ice-lite时，create_answer和IceLite路径都把角色设为Controlled。官方测试已断言本端是Controlled。</p>
+</details>
+<h3>第6题</h3>
+<p>为什么不能把 <code>a=crypto</code> 的 <code>inline</code> 密钥或 <code>ice-pwd</code> 写进公开课文或证据卡？</p>
+<details>
+<summary>显示第6题答案</summary>
+<p>a=crypto的inline参数是明文密钥材料，ice-pwd是ICE口令，两者都写在SDP里，因此必须另用能保密并保护完整性的协议来保护整份描述。课文、摘录和证据卡只使用inline:&lt;redacted&gt;和口令占位。切勿把真实或夹具密钥、口令写进公开材料。</p>
+</details>
+<h3>第7题</h3>
+<p><code>IceLite</code> 是不是全量 ICE？配方3 是不是 <code>webrtc()</code>？<code>Sdes</code> 是不是 Dtls？</p>
+<details>
+<summary>显示第7题答案</summary>
+<p>Connectivity::IceLite不是全量ICE，也不会变成webrtc()那套Ice加Dtls。Keying::Sdes靠媒体级a=crypto换密钥，不是靠指纹和DTLS握手。配方3仍从sip()起步只改这两个字段。也不要把九格组合都写成已经跑过。</p>
+</details>
+<h3>第8题</h3>
+<p><code>ice_lite_sdes</code> 或库测试通过，是不是已经从 Linphone 或真实话机收到了 SRTP？</p>
+<details>
+<summary>显示第8题答案</summary>
+<p>可选的ice_lite_sdes是两个本地PeerConnection在回环上互发媒体，配置从webrtc()改字段，不是从sip()起步，也不是Linphone或公网。主路径测试只核协商字段与角色。测试通过或Connected，不等于已经从话机收到SRTP。</p>
+</details>
+<h3>6.3 间隔回忆与来源</h3>
+<p>明天先不看代码，写出从 <code>sip()</code> 同时改到 <code>IceLite</code> 与 <code>Sdes</code> 的两种 API 写法，并画出“第21课无 ICE 无 crypto / 第22课有 crypto 无 ICE / 本课两者都有，协议 RTP/SAVP，本端 Controlled”的对照。隔一天再默写：<code>a=ice-lite</code> 在会话级，ufrag、pwd、candidate 与 crypto 在媒体级；<code>inline</code> 密钥和 <code>ice-pwd</code> 都必须另加保护。可以把你的证据卡发来，再针对实际缺口继续提问，不因课文已经写完就自动记为掌握。</p>
+<p>主读源码：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L153-L155">IceLite 与 sip() 注释，config.rs 153–155、977–989行</a>，以及 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L5881-L5913">build_description 里的 ICE-lite 属性，5881–5913行</a> 和 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L14543-L14577">主测试 14543–14577行</a>。先读这几处和 README 配方3，再按需要打开对照测试，不展开 DTLS 或全量 ICE 专题。</p>
+<p>其他核对来源：</p>
+<ul>
+<li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a>：配方3，“SIP phone with ICE (e.g. Linphone)”。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">RFC 8445 §2.5</a>：lite 只用 host 候选，不发起检查，但必须应答检查。<a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-6.1.1">§6.1.1</a>：一全一 lite 时，lite 必须是 Controlled。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.3">RFC 8839 §5.3</a>：<code>a=ice-lite</code> 仅为会话级。<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.4">§5.4</a>：<code>ice-ufrag</code> / <code>ice-pwd</code>。<a href="https://www.rfc-editor.org/rfc/rfc8839.html#section-5.1">§5.1</a>：<code>a=candidate</code> 仅为媒体级。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a>：<code>a=crypto</code> 的媒体级格式；摘要与适用性段要求另有协议保护 SDP 中的密钥材料。<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-5.1.2">§5.1.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-7.1.2">§7.1.2</a> 的回显规则见第22课。</li>
+<li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L1574-L1586">create_answer 角色 1574–1586行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L3457-L3466">IceLite 再设 Controlled 3457–3466行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L13220-L13277">对照测试 13220–13277行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/tests/connectivity_keying.rs#L160-L338">call() 与 ice_lite_sdes 160–338行</a>。</li>
+<li><a href="0021-sip-config.html">第21课</a>、<a href="0022-sdes-srtp.html">第22课</a>：对照用，不把上一课结论抄到这里。</li>
+<li><a href="../assets/0023-icelite-sdes/VALIDATION.md">本轮脱敏验证摘要</a>：Linux 教学电脑上的运行与测试结果。不是用户本机运行记录。</li>
+<li><a href="../assets/0023-icelite-sdes/sdp-excerpts.md">脱敏 SDP 摘录</a>：诊断程序的字段摘录，不是官方测试 stdout。</li>
+</ul>
+</main><nav class="next"><a href="0022-sdes-srtp.html">上一课：0022 sip()+Sdes 与 SDES-SRTP 协商</a><a href="../index.html">返回课程目录</a></nav><footer>仅 Linux 教学电脑已跑过所列官方库测试与可选回环测试（本轮退出 0）。Windows、真实话机、Linphone、公网未测。版本及证据边界见正文。</footer></body></html>
