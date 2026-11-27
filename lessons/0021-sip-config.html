@@ -3,9 +3,9 @@
 <p>第13课已经教过怎么从 SDP 判断 Connectivity × Keying，当时明确<strong>不提供 rustrtc API 映射</strong>。第20课用未改的 <code>audio_saver</code> 跑通了浏览器音频接收，配置是 <code>RtcConfiguration::webrtc()</code>。本课把第13课的判断落到源码里的 <code>sip()</code>，载体是同一固定提交上未改的 <code>examples/rtp_track_event.rs</code>。</p>
 <p>先分清这件事：<strong>本课讲如何按对端选择配置，并读一次纯 RTP 音频协商；不是音频回声，也不是已经收到 RTP。</strong>官方示例自己写明不发送实际 RTP，只睡眠 2 秒。本轮在这台 Linux 教学电脑上跑它，示例在打印本地 answer 之前就因过时断言退出。下面的 Windows 步骤供你操作，不是 Windows 成功记录。不要为了让示例变绿去改上游。</p>
 <p>本课约20–30分钟。读对照表与配方 8 分钟，按步骤跑示例并核对日志 8 分钟，证据卡与自测 8–10 分钟。可从<a href="0020-audio-saver.html">第20课</a>直接进来；第13课的判读方法见<a href="0013-sdp-connectivity-keying.html">第13课</a>，这里不当作新课重讲。不教 SIP 信令，不写生产 SIP UA。第1课的配置地图见<a href="0001-overview.html">第1课第3节</a>。</p>
-<p>上游固定提交：<code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。站点页眉仍是 0.6.4 / e13b5f2，本课正文只引用这个固定提交。本课<strong>不打补丁，不改上游原例，不开始第22课。</strong><code>examples/rtp_play.rs</code> 也用 <code>sip()</code>，但发的是 VP8 视频，只作对照，不是本课载体。</p>
+<p>上游固定提交：<code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。站点页眉仍是 0.6.4 / e13b5f2，本课正文只引用这个固定提交。本课<strong>不打补丁，不改上游原例。</strong><code>examples/rtp_play.rs</code> 也用 <code>sip()</code>，但发的是 VP8 视频，只作对照，不是本课载体。</p>
 <p>2026-11-27，Asia/Tokyo（JST）。已在这台 Linux 教学电脑（Debian GNU/Linux 13，kernel 6.12.113+，rustc/cargo 1.100.0）跑过未改的 <code>rtp_track_event</code>：退出码 101，<code>Initial SSRC: 0</code>，没有本地 answer，没有 Track 事件。同一提交上 11 个官方单元测试通过。诊断程序（不是官方示例）在跳过那条过时断言后得到一条脱敏 answer 摘录，见第3节。运行后 HEAD 仍是上述固定提交。</p>
-<p><a href="0020-audio-saver.html">上一课：0020 跑通音频接收（audio_saver）</a> · <a href="../index.html">目录</a> · <a href="../assets/0021-sip-config/VALIDATION.md">本课脱敏验证摘要</a> · <a href="../assets/0021-sip-config/sdp-excerpts.md">脱敏 SDP 摘录</a></p>
+<p><a href="0020-audio-saver.html">上一课：0020 跑通音频接收（audio_saver）</a> · <a href="../index.html">目录</a> · <a href="../assets/0021-sip-config/VALIDATION.md">本课脱敏验证摘要</a> · <a href="../assets/0021-sip-config/sdp-excerpts.md">脱敏 SDP 摘录</a> · <a href="0022-sdes-srtp.html">下一课：0022 sip()+Sdes 与 SDES-SRTP 协商</a></p>
 
 <h2 id="section-1">1. 为什么在 audio_saver 之后改用 sip()</h2>
 <p>第20课的对端是浏览器：完整 ICE、DTLS-SRTP、WebRTC 扩展。所以它用 <code>RtcConfiguration::webrtc()</code>。本课的对端是示例里那段<strong>模拟 SIP INVITE 的音频 SDP</strong>：<code>m=audio 5004 RTP/AVP 8 101</code>，PCMA PT 8，没有 ICE 候选，没有 <code>a=crypto</code>，也没有指纹。第13课的判读结论就是：选路走 SDP 地址，密钥方式是纯 RTP。对应到本库，起点应是 <code>RtcConfiguration::sip()</code>，不是再复制一份 <code>webrtc()</code>。</p>
@@ -236,7 +236,7 @@ Ice         本课未跑            本课未跑               浏览器：用 w
 </details>
 <h3>6.3 间隔回忆与来源</h3>
 <p>明天先不看代码，写出 <code>webrtc()</code> 与 <code>sip()</code> 各五个差异字段，并画出“模拟 offer → sip() → 本轮示例在 SSRC 断言处退出”的关系。隔一天再对照第13课：同一段 RTP/AVP、无 ICE、无 crypto 的音频 SDP，判断标签是什么，映射到哪个构造函数。可以把你的证据卡发来，再针对实际缺口继续提问，不因课文已经写完就自动记为掌握。</p>
-<p>主读源码：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs">rtp_track_event.rs</a> 与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L964-L989">RtcConfiguration::webrtc / sip 964–989行</a>。先读五个差异字段、示例里的模拟 offer 和那条 SSRC 断言，再按需要打开第4节列出的测试，不展开 ICE 实现专题，也不开始第22课。</p>
+<p>主读源码：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs">rtp_track_event.rs</a> 与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L964-L989">RtcConfiguration::webrtc / sip 964–989行</a>。先读五个差异字段、示例里的模拟 offer 和那条 SSRC 断言，再按需要打开第4节列出的测试，不展开 ICE 实现专题。</p>
 <p>其他核对来源：</p>
 <ul>
 <li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a>：两套预设对照表与三条 SIP 配方。</li>
@@ -246,4 +246,4 @@ Ice         本课未跑            本课未跑               浏览器：用 w
 <li><a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-3">RFC 3550 §3</a>：SSRC 是 RTP 头里的 32 位随机标识，不是 2000–2999 区间。</li>
 <li><a href="0013-sdp-connectivity-keying.html">第13课</a>、<a href="0020-audio-saver.html">第20课</a>：判断方法与 <code>webrtc()</code> 音频接收证据，不把上一课结论抄到这里。</li>
 <li><a href="../assets/0021-sip-config/VALIDATION.md">本轮脱敏验证摘要</a>：Linux 教学电脑上的运行与测试结果。不是用户本机运行记录。</li>
-</ul></main><nav class="next"><a href="0020-audio-saver.html">上一课：0020 跑通音频接收（audio_saver）</a><a href="../index.html">返回课程目录</a></nav><footer>仅 Linux 教学电脑已跑过未改的 rtp_track_event（本轮退出 101）及所列官方测试。Windows、真实话机、实际 RTP 收包与公网未测。版本及证据边界见正文。</footer></body></html>
+</ul></main><nav class="next"><a href="0020-audio-saver.html">上一课：0020 跑通音频接收（audio_saver）</a><a href="0022-sdes-srtp.html">下一课：0022 sip()+Sdes 与 SDES-SRTP 协商</a></nav><footer>仅 Linux 教学电脑已跑过未改的 rtp_track_event（本轮退出 101）及所列官方测试。Windows、真实话机、实际 RTP 收包与公网未测。版本及证据边界见正文。</footer></body></html>
