@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第21课：按对端选择 Connectivity × Keying（sip 与纯 RTP）</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第21课 · 20–30分钟 · <a href="../index.html">课程目录</a></header><nav aria-label="本课目录"><a href="#section-1">1. 为什么在 audio_saver 之后改用 sip()</a> · <a href="#section-2">2. webrtc() 与 sip() 差哪五个字段</a> · <a href="#section-3">3. 跑 rtp_track_event，读本轮结果</a> · <a href="#section-4">4. 三条常见 SIP 配方怎么落到 API</a> · <a href="#section-5">5. 容易误判的边界</a> · <a href="#section-6">6. 交一张证据卡，独立自测</a></nav><main><h1>按对端选择 Connectivity × Keying：RtcConfiguration::sip() 与纯 RTP 音频协商（rtp_track_event）</h1>
+<p>第13课已经教过怎么从 SDP 判断 Connectivity × Keying，当时明确<strong>不提供 rustrtc API 映射</strong>。第20课用未改的 <code>audio_saver</code> 跑通了浏览器音频接收，配置是 <code>RtcConfiguration::webrtc()</code>。本课把第13课的判断落到源码里的 <code>sip()</code>，载体是同一固定提交上未改的 <code>examples/rtp_track_event.rs</code>。</p>
+<p>先分清这件事：<strong>本课讲如何按对端选择配置，并读一次纯 RTP 音频协商；不是音频回声，也不是已经收到 RTP。</strong>官方示例自己写明不发送实际 RTP，只睡眠 2 秒。本轮在这台 Linux 教学电脑上跑它，示例在打印本地 answer 之前就因过时断言退出。下面的 Windows 步骤供你操作，不是 Windows 成功记录。不要为了让示例变绿去改上游。</p>
+<p>本课约20–30分钟。读对照表与配方 8 分钟，按步骤跑示例并核对日志 8 分钟，证据卡与自测 8–10 分钟。可从<a href="0020-audio-saver.html">第20课</a>直接进来；第13课的判读方法见<a href="0013-sdp-connectivity-keying.html">第13课</a>，这里不当作新课重讲。不教 SIP 信令，不写生产 SIP UA。第1课的配置地图见<a href="0001-overview.html">第1课第3节</a>。</p>
+<p>上游固定提交：<code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。站点页眉仍是 0.6.4 / e13b5f2，本课正文只引用这个固定提交。本课<strong>不打补丁，不改上游原例，不开始第22课。</strong><code>examples/rtp_play.rs</code> 也用 <code>sip()</code>，但发的是 VP8 视频，只作对照，不是本课载体。</p>
+<p>2026-11-27，Asia/Tokyo（JST）。已在这台 Linux 教学电脑（Debian GNU/Linux 13，kernel 6.12.113+，rustc/cargo 1.100.0）跑过未改的 <code>rtp_track_event</code>：退出码 101，<code>Initial SSRC: 0</code>，没有本地 answer，没有 Track 事件。同一提交上 11 个官方单元测试通过。诊断程序（不是官方示例）在跳过那条过时断言后得到一条脱敏 answer 摘录，见第3节。运行后 HEAD 仍是上述固定提交。</p>
+<p><a href="0020-audio-saver.html">上一课：0020 跑通音频接收（audio_saver）</a> · <a href="../index.html">目录</a> · <a href="../assets/0021-sip-config/VALIDATION.md">本课脱敏验证摘要</a> · <a href="../assets/0021-sip-config/sdp-excerpts.md">脱敏 SDP 摘录</a></p>
+
+<h2 id="section-1">1. 为什么在 audio_saver 之后改用 sip()</h2>
+<p>第20课的对端是浏览器：完整 ICE、DTLS-SRTP、WebRTC 扩展。所以它用 <code>RtcConfiguration::webrtc()</code>。本课的对端是示例里那段<strong>模拟 SIP INVITE 的音频 SDP</strong>：<code>m=audio 5004 RTP/AVP 8 101</code>，PCMA PT 8，没有 ICE 候选，没有 <code>a=crypto</code>，也没有指纹。第13课的判读结论就是：选路走 SDP 地址，密钥方式是纯 RTP。对应到本库，起点应是 <code>RtcConfiguration::sip()</code>，不是再复制一份 <code>webrtc()</code>。</p>
+<p>rustrtc 只生成和解析 SDP，并收发 RTP/SRTP。把这段 SDP 放进 SIP INVITE / 200 OK，是 rsipstack 和应用的事。本课只把 offer 当作已经到达的文本，不讲 INVITE 流程。</p>
+<p>来源：示例注释与远程 SDP 见<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs#L11-L54">rtp_track_event.rs 11–54行</a>；<code>sip()</code> 构造见<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L977-L989">config.rs 977–989行</a>。第13课只做 SDP 判断，见<a href="0013-sdp-connectivity-keying.html">第13课目标段</a>。</p>
+
+<h2 id="section-2">2. webrtc() 与 sip() 差哪五个字段</h2>
+<p>没有一个叫“默认配置”的安全起点。注释写明：从对端种类起步，<code>webrtc()</code> 或 <code>sip()</code>，再改需要改的字段。二者只差这五个字段，其余字段起点相同。出处：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L589-L595">config.rs 589–595行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L964-L989">964–989行</a>，以及<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a> 对照表。</p>
+<div class="table-scroll"><table>
+<thead><tr><th>字段</th><th><code>webrtc()</code></th><th><code>sip()</code></th></tr></thead>
+<tbody>
+<tr><td><code>connectivity</code></td><td><code>Ice</code></td><td><code>Sdp</code></td></tr>
+<tr><td><code>keying</code></td><td><code>Dtls</code></td><td><code>None</code></td></tr>
+<tr><td><code>webrtc_extensions</code></td><td><code>true</code></td><td><code>false</code></td></tr>
+<tr><td><code>rtcp_mux_policy</code></td><td><code>Require</code></td><td><code>Negotiate</code></td></tr>
+<tr><td><code>bundle_policy</code></td><td><code>MaxBundle</code></td><td><code>Balanced</code></td></tr>
+</tbody>
+</table></div>
+<p>枚举定义在同一文件：<code>Connectivity</code> 是 <code>Sdp</code> / <code>IceLite</code> / <code>Ice</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L145-L158">145–158行</a>），<code>Keying</code> 是 <code>None</code>（RTP/AVP）/ <code>Sdes</code>（<code>a=crypto</code>，RTP/SAVP）/ <code>Dtls</code>（指纹，UDP/TLS/RTP/SAVPF）（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L167-L178">167–178行</a>）。<code>IceLite</code> 对应 <a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">RFC 8445 §2.5</a>：lite 代理只用 host 候选，不主动发起检查、不跑那些状态机，但必须能应答对端的连通性检查。Builder 等价物是 <code>RtcConfigurationBuilder::webrtc()</code> / <code>::sip()</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1119-L1132">1119–1132行</a>），再用 <code>.connectivity(...)</code>、<code>.keying(...)</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1216-L1225">1216–1225行</a>）。</p>
+<pre><code class="language-rust">    pub fn sip() -&gt; Self {
+        Self::new(
+            Connectivity::Sdp,
+            Keying::None,
+            false,
+            RtcpMuxPolicy::Negotiate,
+            BundlePolicy::Balanced,
+        )
+    }</code></pre>
+<p class="source">摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L981-L989">config.rs 981–989行</a> @ f1b59bf。</p>
+<p>README 还写：任意 Keying 可配任意 Connectivity；数据通道需要 <code>Keying::Dtls</code>。那是库的声明。本课只教能在 README 配方或已跑测试里对上的组合，不宣称自己跑过全部九格。</p>
+
+<h2 id="section-3">3. 跑 rtp_track_event，读本轮结果</h2>
+<h3>3.1 在全新目录运行官方原例</h3>
+<p>以下命令由你在 Windows 11 PowerShell 执行。沿用已有 Git 和 Rust，不在这一课重配系统环境。目录存在就停止，不覆盖你原来的工程。这是给你操作的步骤，<strong>不是本课已经在 Windows 上跑通的记录</strong>。在这台 Linux 教学电脑上，同一命令于 2026-11-27 12:01:16 JST 开始，约 8.7 秒后示例以退出码 101 结束；编译保留原库三条 <code>fetch_update</code> 弃用警告。</p>
+<pre><code class="language-powershell">$ErrorActionPreference = "Stop"
+$root = Join-Path $HOME "rustrtc-0021-sip-config"
+if (Test-Path $root) { throw "目录已存在，请换全新目录名，不要覆盖。" }
+git clone https://github.com/restsend/rustrtc.git $root
+if ($LASTEXITCODE -ne 0) { throw "克隆失败，停止。" }
+Set-Location $root
+$sha = "f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa"
+git checkout --detach $sha
+if ($LASTEXITCODE -ne 0) { throw "检出固定提交失败，停止。" }
+cargo +1.100.0 run --example rtp_track_event
+</code></pre>
+<p>Linux 教学电脑上等价命令是在新目录检出同一提交后执行 <code>cargo +1.100.0 run --example rtp_track_event</code>。跑完确认进程已退出。这个示例<strong>不监听 3000 端口</strong>；文中的 3000 只出现在那条过时断言的 SSRC 开区间末端 <code>2000..3000</code>，与第20课的页面端口不是一回事。</p>
+<h3>3.2 本轮官方示例实际打印了什么</h3>
+<p>示例先用 <code>RtcConfiguration::sip()</code> 建 <code>PeerConnection</code>，再添加 <code>MediaKind::Audio</code>、<code>RecvOnly</code> 的 transceiver，然后 <code>set_remote_description</code> 那段模拟 INVITE。随后它读取 <code>receiver.ssrc()</code>，并断言该值落在 2000–2999。来源：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs#L32-L67">32–67行</a>。</p>
+<pre><code class="language-sdp"># 示例内嵌的模拟远程 offer，原文如此，不是一次真实 INVITE
+v=0
+o=- 123456 123456 IN IP4 10.0.1.100
+s=SIP Call
+c=IN IP4 10.0.1.100
+t=0 0
+m=audio 5004 RTP/AVP 8 101
+a=rtpmap:8 PCMA/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=sendonly
+a=mid:0
+</code></pre>
+<p>本轮 stdout 在 2026-11-27 12:01:25.141747 JST（由日志中的 UTC 换算）打印了这段 offer，并写：</p>
+<pre><code class="language-text">📊 Initial SSRC: 0 (provisional, range 2000-2999)</code></pre>
+<p>随后 stderr：<code>thread 'main' panicked at examples/rtp_track_event.rs:67:9: Should be provisional SSRC</code>，退出码 101。没有 <code>create_answer</code> 的输出，没有 “Example complete”，没有 Track 事件。示例在断言之后才调用 <code>create_answer</code> 并睡眠 2 秒（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs#L70-L121">70–121行</a>），本轮没有走到那里。调试日志里出现过本机 host 候选地址，那只是内部传输层打的 DEBUG，<strong>不能当成 SDP 里协商了 ICE</strong>；以正式 SDP 属性为准。</p>
+<p>这与同一提交的库行为一致，不是你的环境配错。<code>add_transceiver</code> 用 <code>RtpReceiverBuilder::new(kind, 0)</code> 创建接收器，初始 SSRC 就是 0（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L1331-L1337">1331–1337行</a>）。官方测试 <code>rtp_mode_track_event_after_set_remote</code>（12508–12533行）和 <code>rtp_mode_sends_track_event_after_ssrc_latching</code>（11515–11547行）都断言：offer 没有 <code>a=ssrc</code> 时，<code>receiver.ssrc()</code> 应为 0。若 offer 带 <code>a=ssrc:55555</code>，<code>rtp_mode_track_event_with_remote_ssrc</code>（12537–12559行）则要求接收 SSRC 等于 55555。<a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-3">RFC 3550 §3</a> 把 SSRC 定义为 RTP 头里的 32 位随机标识，并不是 2000–2999 这个区间。示例注释和断言仍写着旧约定，已经和本提交的库及测试不一致。本课不要改上游示例去“修绿”。</p>
+<h3>3.3 官方测试里 sip() 的 answer 长什么样</h3>
+<p>本轮在同一提交、同一工具链上跑了 11 个官方库测试，全部通过（2026-11-27 12:11:23 JST，退出码 0，测试本身约 0.03 秒）。其中与读 SDP 直接相关的是：</p>
+<ul>
+<li><code>rtp_mode_no_ice_dtls_artifacts</code>（12325–12380行）：<code>sip()</code> 的 offer 必须是 <code>RTP/AVP</code>，且不得含 <code>ice-ufrag</code>、<code>ice-pwd</code>、<code>a=candidate</code>、<code>fingerprint</code>、<code>a=setup:</code>。</li>
+<li><code>rtp_mode_no_ice_lite_no_ice_attributes</code>（13280–13313行）：未改成 IceLite 时，不得有 <code>ice-lite</code> / <code>ice-ufrag</code> / <code>a=candidate</code>。</li>
+<li><code>rtp_mode_answer_omits_rtcp_mux_when_offer_omits_it</code>（12565–12607行）：offer 没有 <code>a=rtcp-mux</code> 时，answer 不得广告 <code>a=rtcp-mux</code>，但应有单独的 <code>a=rtcp:</code>。这与 <code>sip()</code> 的 <code>RtcpMuxPolicy::Negotiate</code> 一致。</li>
+<li><code>rtp_mode_answerer_connects_on_set_remote</code>（12289–12321行）：answerer 在 <code>set_remote_description</code> 之后可以把连接状态推到 <code>Connected</code>，远程地址来自 offer 的 <code>c=</code>/<code>m=</code>。这只证明按 SDP 地址做了直连设置，<strong>不是 Track 事件，也不是收到了音频 RTP</strong>。</li>
+</ul>
+<p>这些测试本身并不把完整 SDP 打印到 stdout。为了看到“同一段示例 offer、同一个 <code>sip()</code>、同一个 RecvOnly transceiver”在跳过过时断言之后会写出什么 answer，教学验证另写了一个<strong>不发表、不要求你运行</strong>的诊断程序：它只是复用示例的 offer 与 <code>sip()</code>，不改库。诊断在 2026-11-27 12:10:51–12:11:20 JST 运行，退出码 0；<code>set_remote</code> 与 <code>set_local</code> 之后 SSRC 仍是 0，2 秒内没有 Track 事件。下面是该诊断 answer 的<strong>脱敏摘录</strong>，地址和端口已替换，不能拿去部署。它<strong>不是</strong>官方示例的 stdout。</p>
+<pre><code class="language-sdp"># 诊断程序的本地 answer，截取且已脱敏，不是官方示例输出
+v=0
+o=- [sess] [vers] IN IP4 [addr]
+s=-
+c=IN IP4 [addr]
+t=0 0
+m=audio [port] RTP/AVP 111
+a=mid:0
+a=recvonly
+a=rtpmap:111 opus/48000/2
+a=fmtp:111 minptime=10;useinbandfec=1;stereo=1
+a=rtcp:[rtcp-port]
+</code></pre>
+<p>先看对上的部分。协议是 <code>RTP/AVP</code>，没有 <code>a=crypto</code>、没有 <code>ice-ufrag</code>/<code>ice-pwd</code>、没有 <code>fingerprint</code>，与 Keying::None、Connectivity::Sdp 一致。offer 是 <code>a=sendonly</code>，answer 是 <code>a=recvonly</code>，符合 <a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a>：sendonly 的 offer 对应 recvonly 或 inactive 的 answer。offer 没有 <code>a=rtcp-mux</code>，answer 带了 <code>a=rtcp:</code>，与上面那条官方测试一致。端口不是 0，按同一节，端口为 0 才表示拒绝该流。</p>
+<p>再看需要对上 offer 的部分。默认 <code>media_capabilities</code> 为 <code>None</code> 时，用内置集合：音频是 Opus + PCMU，不是 PCMA（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L519-L522">MediaCapabilities::default 519–522行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L638-L641">638–641行</a>）。Opus 的默认 PT 是 111，fmtp 为 <code>minptime=10;useinbandfec=1;stereo=1</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L236-L241">236–241行</a>），与摘录一致。示例 offer 列出的是 PT 8 的 PCMA 和 PT 101 的 telephone-event。诊断 answer <strong>只列出了 111 opus，没有 8 或 101</strong>。RFC 3264 §6.1 要求 recvonly 的 answer 至少包含 offer 里的一种格式，可以额外再列自己的格式。这条诊断 answer 没有列出 offer 中的格式。库提供 <code>AudioCapability::pcma()</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L255-L264">255–264行</a>）。若对端确实是 PCMA，需要自己把 PCMA 写进 <code>media_capabilities</code>。本课没有改官方示例，也没有把“加上 pcma() 之后的新 answer”当成已跑证据。</p>
+<figure class="diagram">
+<pre>图1 · 协商路径示意，不是抓包或一次成功收包图
+模拟 SIP offer（PCMA PT 8，RTP/AVP，无 ICE，无 crypto）
+        ↓
+RtcConfiguration::sip()  →  PeerConnection（Audio / RecvOnly）
+        ↓
+set_remote_description
+        ↓
+本轮官方示例在 receiver.ssrc()==0 处断言失败（退出 101）
+        ↓  （仅教学诊断跳过该断言，不是官方 stdout）
+create_answer：RTP/AVP，a=recvonly，无 ice/crypto，另有 a=rtcp
+但默认能力是 Opus+PCMU，本轮诊断 answer 只列出了 111 opus</pre>
+<figcaption>官方示例停在断言。answer 摘录来自标明来源的诊断，用来对照字段，不证明已经收到媒体。</figcaption>
+</figure>
+
+<h2 id="section-4">4. 三条常见 SIP 配方怎么落到 API</h2>
+<p>README Configuration 给出三条 SIP 配方。本课把它们映射到 API，并用已通过的官方测试核对 SDP 属性。没有在本轮对这三条都做真实 RTP 互发。</p>
+<div class="table-scroll"><table>
+<thead><tr><th>对端</th><th>起点</th><th>再改</th><th>本轮用来核对的官方测试</th></tr></thead>
+<tbody>
+<tr><td>SIP 中继，纯 RTP</td><td><code>sip()</code></td><td>（不改）</td><td><code>rtp_mode_no_ice_dtls_artifacts</code>：RTP/AVP，无 ICE/DTLS 属性</td></tr>
+<tr><td>SIP 中继，SDES-SRTP</td><td><code>sip()</code></td><td><code>keying = Keying::Sdes</code></td><td><code>create_offer_srtp_mode_includes_crypto</code>（10926–10949行）：协议为 RTP/SAVP，且存在 <code>a=crypto</code>，套件名前缀为 <code>AES_CM_128_HMAC_SHA1_80</code>。<code>create_answer_srtp_mode_uses_savp_profile</code>（11015–11044行）对 answer 做同样的协议与属性断言</td></tr>
+<tr><td>带 ICE 的 SIP 话机（例如 Linphone）</td><td><code>sip()</code></td><td><code>connectivity = Connectivity::IceLite</code>，<code>keying = Keying::Sdes</code></td><td><code>rtp_mode_ice_lite_sdp_attributes</code>（13220–13276行）核了 IceLite 仍用 RTP/AVP，并有 <code>a=ice-lite</code>、ufrag、pwd、candidate，且无指纹。完整配方 IceLite×Sdes 由 <code>srtp_mode_ice_lite_answer_has_ice_attributes</code>（14543–14577行）断言 answer 同时含 <code>a=ice-lite</code>、ICE 凭证行、candidate 和 <code>a=crypto</code></td></tr>
+</tbody>
+</table></div>
+<pre><code class="language-rust">// 配方2：SIP 中继，SDES-SRTP
+let mut config = RtcConfiguration::sip();
+config.keying = Keying::Sdes;
+
+// 配方3：带 ICE 的 SIP 话机
+let mut config = RtcConfiguration::sip();
+config.connectivity = Connectivity::IceLite;
+config.keying = Keying::Sdes;</code></pre>
+<p>也可从 <code>RtcConfigurationBuilder::sip()</code> 链式调用 <code>.keying(Keying::Sdes)</code> 和 <code>.connectivity(Connectivity::IceLite)</code>。字段写法见 README 示例，以及 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1216-L1225">1216–1225行</a>。</p>
+<p><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a> 规定 <code>a=crypto</code> 只出现在媒体级，格式为 <code>a=crypto:&lt;tag&gt; &lt;crypto-suite&gt; &lt;key-params&gt;</code>，并且 SDP 本身需要由别的安全协议保护。密钥在 SDP 里是明文材料。课文只用明显无效的占位，如下所示；官方测试里出现过的真实或仿真密钥，本课不转载。</p>
+<pre><code class="language-sdp"># 仅说明格式，密钥是无效占位，不能用于发送或协商
+m=audio [port] RTP/SAVP 8
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:NOT_A_REAL_KEY</code></pre>
+<figure class="diagram">
+<pre>图2 · Connectivity × Keying 与三条 SIP 配方
+            None（纯 RTP）     Sdes（a=crypto）      Dtls（指纹）
+Sdp         配方1：sip()       配方2：sip()+Sdes      库称可用，本课未跑
+IceLite     本课未作为配方教     配方3：sip()+IceLite+Sdes  本课未跑
+Ice         本课未跑            本课未跑               浏览器：用 webrtc()
+
+只把 README 写明、且已有测试核对属性的三条当成配方。
+任意格子“库都支持”是库的声明，不是本轮运行记录。</pre>
+<figcaption>第13课用同一坐标做 SDP 判断；本课只把三条 SIP 配方映射到 API。</figcaption>
+</figure>
+
+<h2 id="section-5">5. 容易误判的边界</h2>
+<ul>
+<li><strong>官方示例在本提交会断言失败。</strong>日志里的 SSRC 0 与官方测试一致。不要改上游示例，也不要把退出 101 当成环境失败。</li>
+<li><strong>没有收到音频 RTP。</strong>示例注释写明不发送实际 RTP，只睡眠 2 秒（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs#L113-L121">113–121行</a>）。本轮示例在睡眠前就退出；诊断等了 2 秒也没有 Track。示例还写明：Track 应在 SSRC 锁定之后再出现（124–128行）。本轮没有发送真实 RTP，也没有声称锁定成功。</li>
+<li><strong><code>Connected</code> 不等于收到媒体。</strong><code>rtp_mode_answerer_connects_on_set_remote</code> 只说明按 offer 的 <code>c=</code>/<code>m=</code> 地址完成了直连设置。</li>
+<li><strong>默认能力不含 PCMA。</strong>示例 offer 是 PT 8。诊断 answer 列出的是默认 Opus 111。需要 PCMA 时加入 <code>AudioCapability::pcma()</code>。本课没有跑“改完能力之后”的官方示例。</li>
+<li><strong>不讲 SIP 信令，不做生产 UA。</strong>信令走 rsipstack。本课不写 INVITE、100、200 OK 的事务流程。</li>
+<li><strong>3000 端口冲突与本课无关。</strong>这个示例不绑定 3000。3000 只出现在过时的 SSRC 区间写法里。</li>
+<li><strong>DEBUG 里的 candidate 不是 SDP 证据。</strong>判断有没有 ICE，看正式 SDP 是否出现 <code>a=ice-ufrag</code> 等属性，或看第4节列出的官方测试。</li>
+<li><strong><code>rtp_play</code> 不是本课载体。</strong>它也调用 <code>sip()</code>，但发送的是 VP8 视频。</li>
+</ul>
+
+<h2 id="section-6">6. 交一张证据卡，独立自测</h2>
+<figure class="diagram">
+<pre>图3 · 什么算本轮证据，什么不算
+算：未改的 rtp_track_event 退出 101；Initial SSRC: 0；无 answer；无 Track
+算：同一提交上所列 11 个官方测试通过；sip() 的 SDP 无 ICE/DTLS 痕迹
+算：标明来源的脱敏诊断 answer（RTP/AVP、recvonly、无 crypto/ICE；列出了 111）
+不算：示例注释里的临时 SSRC 2000–2999（与本轮库和测试不符）
+不算：PeerConnectionState::Connected（只是按 SDP 地址做了直连设置）
+不算：Track 事件、真实 RTP 收包、Windows 成功、公网或对真实话机的通话</pre>
+<figcaption>证据边界只对这次固定提交上的运行和测试负责，不是掌握声明。</figcaption>
+</figure>
+<h3>6.1 证据卡</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr><th>项目</th><th>你要填写的证据</th></tr>
+</thead>
+<tbody>
+<tr><td>版本与环境</td><td>上游 SHA、实际系统/工具链、真实运行或只读了课文</td></tr>
+<tr><td>配置起点</td><td>用的是 sip() 还是 webrtc()；五个差异字段是否按第2节核对过</td></tr>
+<tr><td>官方示例</td><td>退出码；Initial SSRC 的实际值；是否打印了本地 answer；是否出现 Track</td></tr>
+<tr><td>远程 offer</td><td>proto、PT 与编码、方向、有无 ICE/crypto（以你这次打印的文本为准）</td></tr>
+<tr><td>能力集合</td><td>默认是 Opus+PCMU；若对端是 PCMA，你是否只停留在观察，还是另做了未要求的修改</td></tr>
+<tr><td>配方</td><td>若只是纯 RTP 中继，是否错误地加了 Sdes 或 IceLite</td></tr>
+<tr><td>结论边界</td><td>已证实哪一步；有没有把退出 101、Connected 或注释里的 2000–2999 写成收包成功</td></tr>
+</tbody>
+</table></div>
+<p>你的退出码和 SSRC 若与本轮相同，只说明同一提交上的原例仍会走这条断言，不是失败，也不是已经掌握。分享卡片前，删掉 ICE 密码、ufrag、指纹、真实 <code>a=crypto</code> 密钥和完整未脱敏 SDP。本课不需要这些秘密来批改。</p>
+<h3>6.2 八道自测</h3>
+<p>先遮住答案。每题都可单独判断，不需要等待聊天回复下一题。八道答案篇幅相同。</p>
+<h3>第1题</h3>
+<p>为什么第20课用 <code>webrtc()</code>，本课改用 <code>sip()</code>？</p>
+<details>
+<summary>显示第1题答案</summary>
+<p>第20课的对端是浏览器，必须用完整ICE和DTLS-SRTP，所以选用webrtc()。本课对端是模拟的SIP音频SDP：无ICE、无crypto，走纯RTP。sip()预设是Sdp×None。不要把上一课的webrtc()配置直接套到这种对端上以便完成对接。</p>
+</details>
+<h3>第2题</h3>
+<p><code>webrtc()</code> 和 <code>sip()</code> 在源码里差哪几个字段？各自的取值是什么？</p>
+<details>
+<summary>显示第2题答案</summary>
+<p>二者只差选路、密钥、扩展开关、rtcp-mux策略和BUNDLE策略。webrtc()是Ice、Dtls、开扩展、Require、MaxBundle；sip()是Sdp、None、关扩展、Negotiate、Balanced。完整英文字段名以第2节对照表为准。</p>
+</details>
+<h3>第3题</h3>
+<p>在本课固定提交上运行未改的 <code>rtp_track_event</code>，本轮实际结果是什么？</p>
+<details>
+<summary>显示第3题答案</summary>
+<p>固定提交上未改示例在第67行断言失败，退出码是101。set_remote之后receiver.ssrc()是0，并不在2000到2999。没有打印本地answer，没有Track事件，也没有等到2秒结束。因此绝不能把这次运行写成协商成功或已经成功收到媒体包。</p>
+</details>
+<h3>第4题</h3>
+<p>为什么说示例里 2000–2999 的断言已经过时？本课应不应该改上游示例让它变绿？</p>
+<details>
+<summary>显示第4题答案</summary>
+<p>同一提交里add_transceiver把接收SSRC初始化为0。官方测试rtp_mode_track_event_after_set_remote要求：offer没有a=ssrc时，SSRC应保持未知的0。本课不要为了让示例变绿去改上游，该断言已和库不一致。</p>
+</details>
+<h3>第5题</h3>
+<p>README 里三条常见 SIP 对端，分别怎样映射到 API？本课有没有跑过全部 Connectivity × Keying 组合？</p>
+<details>
+<summary>显示第5题答案</summary>
+<p>纯RTP中继直接用sip()。SDES-SRTP中继是sip()再把keying设为Keying::Sdes。带ICE的话机例如Linphone，是sip()再设IceLite和Sdes。库称任意组合都可用，本课只教这三条能在README或测试里对得上的配方。</p>
+</details>
+<h3>第6题</h3>
+<p>这次运行能证明已经收到音频 RTP 吗？Track 事件要等到什么时候？</p>
+<details>
+<summary>显示第6题答案</summary>
+<p>不能。这次运行并不能证明已经收到音频RTP。官方示例写明它不发送实际RTP，只睡眠2秒。本轮示例在睡眠前就崩溃；跳过断言的诊断同样等了2秒也没有Track。Track要等SSRC锁定之后才会出现。Connected或打印了offer，都不等于已经收到音频媒体。</p>
+</details>
+<h3>第7题</h3>
+<p>默认 <code>sip()</code> 去回答示例里那段 PCMA offer 时，要注意什么？</p>
+<details>
+<summary>显示第7题答案</summary>
+<p>默认能力是Opus加PCMU，并不包含PCMA。示例offer是PT 8的PCMA。跳过过时断言后的诊断answer只列出了111 opus，没有8或101。方向是recvonly，协议是RTP/AVP。对端若要用PCMA，必须自行把PCMA加入默认能力列表。</p>
+</details>
+<h3>第8题</h3>
+<p>本课为什么不讲 SIP INVITE？这里的 3000 是端口冲突吗？课文里能不能写真实的 <code>a=crypto</code> 密钥？</p>
+<details>
+<summary>显示第8题答案</summary>
+<p>信令由rsipstack负责，rustrtc只管媒体SDP与RTP。本课不写INVITE流程，也不做生产UA。示例并不监听3000，3000只是过时断言里SSRC区间的开区间末端。crypto行只用明显无效的占位，切勿把真实或仿真密钥写进任何对外公开的课文中。</p>
+</details>
+<h3>6.3 间隔回忆与来源</h3>
+<p>明天先不看代码，写出 <code>webrtc()</code> 与 <code>sip()</code> 各五个差异字段，并画出“模拟 offer → sip() → 本轮示例在 SSRC 断言处退出”的关系。隔一天再对照第13课：同一段 RTP/AVP、无 ICE、无 crypto 的音频 SDP，判断标签是什么，映射到哪个构造函数。可以把你的证据卡发来，再针对实际缺口继续提问，不因课文已经写完就自动记为掌握。</p>
+<p>主读源码：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/examples/rtp_track_event.rs">rtp_track_event.rs</a> 与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L964-L989">RtcConfiguration::webrtc / sip 964–989行</a>。先读五个差异字段、示例里的模拟 offer 和那条 SSRC 断言，再按需要打开第4节列出的测试，不展开 ICE 实现专题，也不开始第22课。</p>
+<p>其他核对来源：</p>
+<ul>
+<li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a>：两套预设对照表与三条 SIP 配方。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1">RFC 3264 §6.1</a>：answer 方向、端口为 0 才是拒绝、recvonly 的格式必须含 offer 中的一种。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a>：<code>a=crypto</code> 的媒体级格式；SDP 需要另外的安全保护。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc8445.html#section-2.5">RFC 8445 §2.5</a>：ICE-lite 只用 host 候选，应答检查，不主动发起检查。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc3550.html#section-3">RFC 3550 §3</a>：SSRC 是 RTP 头里的 32 位随机标识，不是 2000–2999 区间。</li>
+<li><a href="0013-sdp-connectivity-keying.html">第13课</a>、<a href="0020-audio-saver.html">第20课</a>：判断方法与 <code>webrtc()</code> 音频接收证据，不把上一课结论抄到这里。</li>
+<li><a href="../assets/0021-sip-config/VALIDATION.md">本轮脱敏验证摘要</a>：Linux 教学电脑上的运行与测试结果。不是用户本机运行记录。</li>
+</ul></main><nav class="next"><a href="0020-audio-saver.html">上一课：0020 跑通音频接收（audio_saver）</a><a href="../index.html">返回课程目录</a></nav><footer>仅 Linux 教学电脑已跑过未改的 rtp_track_event（本轮退出 101）及所列官方测试。Windows、真实话机、实际 RTP 收包与公网未测。版本及证据边界见正文。</footer></body></html>
