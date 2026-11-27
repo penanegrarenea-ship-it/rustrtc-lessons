@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第22课：sip() 加上 Keying::Sdes（SDES-SRTP 协商）</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/packet-lessons.css"></head><body class="lesson-packets"><header class="course">rustrtc 学习 · 第22课 · 20–30分钟 · <a href="../index.html">课程目录</a></header><nav aria-label="本课目录"><a href="#section-1">1. 为什么在第21课的纯 RTP sip() 之后改 keying</a> · <a href="#section-2">2. Keying::Sdes 在 API 和 SDP 里改了什么</a> · <a href="#section-3">3. 跑官方测试，读本轮结果</a> · <a href="#section-4">4. 答案怎样处理 offer 里的 crypto</a> · <a href="#section-5">5. 容易误判的边界</a> · <a href="#section-6">6. 交一张证据卡，独立自测</a></nav><main><h1>sip() 加上 Keying::Sdes：SDES-SRTP 音频协商（RTP/SAVP 与 a=crypto）</h1>
+<p>第21课已经用未改的 <code>examples/rtp_track_event.rs</code> 跑过默认的 <code>RtcConfiguration::sip()</code>：那是纯 RTP，<code>Keying::None</code>，媒体协议是 <code>RTP/AVP</code>，没有 <code>a=crypto</code>。README 里另外两条 SIP 配方当时只列了出来。本课只教配方2：仍从 <code>sip()</code> 起步，再把 <code>keying</code> 设为 <code>Keying::Sdes</code>。</p><p>先分清这件事：<strong>本课讲 SDES-SRTP 的 API 与 SDP 协商证据，不是已经从话机收到 SRTP 音频。</strong><code>examples/</code> 下没有使用 <code>Keying::Sdes</code> 的官方示例。可运行的载体是同一固定提交上的官方库测试，不要为了补一个学生二进制去改上游。下面的 Windows 步骤供你操作，不是 Windows 成功记录。配方3（<code>sip()</code> 再设 <code>Connectivity::IceLite</code> 与 <code>Keying::Sdes</code>，例如 Linphone）只作为下一步提及，不当作本课主路径。</p><p>本课约20–30分钟。读 API 与 SDP 对照 8 分钟，按步骤跑官方测试并核对断言 8 分钟，证据卡与自测 8–10 分钟。可从<a href="0021-sip-config.html">第21课</a>直接进来。不重讲<a href="0013-sdp-connectivity-keying.html">第13课</a>的 SDP 判断方法，也不重讲第9–12课的 SRTP 包内部或 DTLS。不教 SIP 信令，不写生产 SIP UA。第1课的配置地图见<a href="0001-overview.html">第1课第3节</a>。</p><p>上游固定提交：<code>f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa</code>。站点页眉仍是 0.6.4 / e13b5f2，本课正文只引用这个固定提交。本课<strong>不打补丁，不改上游原例或测试。</strong></p><p>2026-11-27，Asia/Tokyo（JST）。已在这台 Linux 教学电脑（Debian GNU/Linux 13，kernel 6.12.113+，rustc/cargo 1.100.0）跑过 7 个官方库测试：18:28:22–18:28:23 JST，全部通过，退出码 0。测试 stdout 没有打印 <code>a=crypto</code> 密钥。另有标明来源的诊断程序（不是官方测试 stdout）给出脱敏 SDP 摘录，见第3节。运行后 HEAD 仍是上述固定提交。Windows、真实话机、实际 SRTP 媒体交换、公网与 IceLite 配方未测。</p>
+<p><a href="0021-sip-config.html">上一课：0021 按对端选择 sip()（rtp_track_event）</a> · <a href="../index.html">目录</a> · <a href="../assets/0022-sdes-srtp/VALIDATION.md">本课脱敏验证摘要</a> · <a href="../assets/0022-sdes-srtp/sdp-excerpts.md">脱敏 SDP 摘录</a></p>
+<h2 id="section-1">1. 为什么在第21课的纯 RTP sip() 之后改 keying</h2>
+<p>第21课的对端是纯 RTP 音频 SDP：<code>RTP/AVP</code>，没有 <code>a=crypto</code>，也没有指纹。对应配置是未经修改的 <code>sip()</code>，也就是 <code>Connectivity::Sdp</code> × <code>Keying::None</code>。</p>
+<p>配方2的对端是 SIP 中继上的 SDES-SRTP。选路仍然用 SDP 里的 <code>c=</code>/<code>m=</code> 地址，但密钥要按 <a href="https://www.rfc-editor.org/rfc/rfc4568.html">RFC 4568</a> 在 SDP 里用 <code>a=crypto</code> 交换。所以起点还是 <code>sip()</code>，只改一个字段：<code>keying = Keying::Sdes</code>。不要把上一课的纯 RTP 配置直接拿去对接这类中继，也不要改回 <code>webrtc()</code> 或改成 <code>Keying::Dtls</code>——那是另一套指纹和 DTLS 握手，不是本课。</p>
+<p>README 把这条写成：“SIP trunk, SDES-SRTP” 从 <code>sip()</code> 起步，然后 <code>keying = Keying::Sdes</code>。旧名 <code>TransportMode::Srtp</code> 也映射到同一写法。出处：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a> 配方表第245行，以及迁移说明第255行。</p>
+<p><code>sip()</code> 本身不会替你改 keying，它的预设仍是 <code>Keying::None</code>：</p>
+<pre><code class="language-rust">    pub fn sip() -> Self {
+        Self::new(
+            Connectivity::Sdp,
+            Keying::None,
+            false,
+            RtcpMuxPolicy::Negotiate,
+            BundlePolicy::Balanced,
+        )
+    }</code></pre>
+<p>摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L981-L989">config.rs 981–989行</a> @ f1b59bf。注释也写明：Change <code>keying</code> for SDES-SRTP，<code>connectivity</code> for ICE-lite（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L977-L980">977–980行</a>）。</p>
+<h2 id="section-2">2. Keying::Sdes 在 API 和 SDP 里改了什么</h2>
+<p>枚举定义在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L171-L178">config.rs 171–178行</a>：<code>None</code> 是纯 RTP（RTP/AVP），<code>Sdes</code> 是 SDES、<code>a=crypto</code>（RFC 4568）、RTP/SAVP，<code>Dtls</code> 是 DTLS-SRTP、<code>a=fingerprint</code>、UDP/TLS/RTP/SAVPF。两种等价写法：</p>
+<pre><code class="language-rust">let mut config = RtcConfiguration::sip();
+config.keying = Keying::Sdes;</code></pre>
+<pre><code class="language-rust">let config = RtcConfigurationBuilder::sip()
+    .keying(Keying::Sdes)
+    .build();</code></pre>
+<p>字段赋值见 README 示例第358–360行。Builder 的 <code>.keying(...)</code> 在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1222-L1225">config.rs 1222–1225行</a>，<code>RtcConfigurationBuilder::sip()</code> 在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L1127-L1132">1127–1132行</a>。选路仍是 <code>Sdp</code>，扩展开关、<code>rtcp_mux_policy</code>、<code>bundle_policy</code> 都不因这一步而改。</p>
+<p><code>create_offer</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L1524-L1565">1524–1565行</a>）和 <code>create_answer</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L1567-L1590">1567–1590行</a>）都走进同一个 <code>build_description</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L5502">5502行</a>）。这里只看和本课有关的两处：</p>
+<pre><code class="language-rust">                match keying {
+                    Keying::None => section.protocol = "RTP/AVP".to_string(),
+                    Keying::Sdes => section.protocol = "RTP/SAVP".to_string(),
+                    Keying::Dtls => {}
+                }</code></pre>
+<p>摘自 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L5754-L5758">5754–5758行</a>。注释写明：SDES-SRTP 必须宣告 RTP/SAVP，好让非 ICE、非 DTLS 的 SIP 中继接受。</p>
+<p>当 <code>keying == Keying::Sdes</code> 时，同一函数接着写媒体级 <code>a=crypto</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6017-L6067">6017–6067行</a>）。offer 的默认值是 tag <code>1</code>、套件 <code>AES_CM_128_HMAC_SHA1_80</code>、生存期 <code>|2^31</code>、无 MKI；密钥由 <code>generate_sdes_key_params</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L770-L775">770–775行</a>）按套件长度生成 <code>inline:</code> 材料。answer 会改用 offer 里选中的套件、tag 和生存期，再写入本端密钥。</p>
+<p><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a> 规定：<code>a=crypto</code> 只能出现在媒体级，不能写在会话级，格式为：</p>
+<pre><code class="language-sdp"># 仅说明格式，密钥是无效占位，不能用于发送或协商
+m=audio [port] RTP/SAVP 111
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:NOT_A_REAL_KEY|2^31</code></pre>
+<p>也就是 <code>a=crypto:&lt;tag&gt; &lt;crypto-suite&gt; &lt;key-params&gt; [&lt;session-params&gt;]</code>。密钥写在 SDP 里，是明文材料。RFC 在摘要和适用性段要求：必须另有能提供保密和完整性的协议来保护这份 SDP；在 SIP 里建议用 SIPS URI 或 S/MIME。</p>
+<p>DTLS 属性只在 <code>Keying::Dtls</code> 时写入。<code>populate_media_capabilities</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6182">6182行</a>) 在 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6274-L6292">6274–6292行</a> 写明：SDES-SRTP 靠 <code>a=crypto</code> 换密钥，不得宣告 <code>a=fingerprint</code> / <code>a=setup</code>，否则 SIP/SDES 对端（例如 Twilio）会拒绝这份 SDP。<code>PeerConnection::new</code> 在 keying 不是 <code>Dtls</code> 时会跳过证书生成（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L904-L905">904–905行</a>）。</p>
+<figure class="diagram">
+<pre>图1 · 配方2只改 keying，SDP 跟着变
+sip() 默认：Sdp × None → m= 协议 RTP/AVP，无 a=crypto，无指纹
+        ↓  只改 config.keying = Keying::Sdes
+sip()+Sdes：Sdp × Sdes → m= 协议 RTP/SAVP，媒体级 a=crypto，仍无指纹
+        ↓
+create_offer / create_answer → build_description
+本课用官方库测试核对这些字段；不是一次话机收包</pre>
+<figcaption>这是协商路径示意，不是抓包图。</figcaption>
+</figure>
+<h2 id="section-3">3. 跑官方测试，读本轮结果</h2>
+<h3>3.1 在全新目录运行官方库测试</h3>
+<p>以下命令由你在 Windows 11 PowerShell 执行。沿用已有 Git 和 Rust，不在这一课重配系统环境。目录存在就停止，不覆盖你原来的工程。这是给你操作的步骤，<strong>不是本课已经在 Windows 上跑通的记录</strong>。在这台 Linux 教学电脑上，等价的三条 <code>cargo +1.100.0 test --lib</code> 于 2026-11-27 18:28:22–18:28:23 JST 全部以退出码 0 结束；因为测试二进制此前已经编过，三次 <code>Finished</code> 分别约为 0.25、0.21、0.18 秒，测试本身 0.02、0.01、0.02 秒。编译保留原库三条 <code>fetch_update</code> 弃用警告，不是本课改了依赖。</p>
+<p>fresh clone 上第一次编译会更久。rustc 1.100.0 的测试过滤器按子串匹配；不要把 <code>|</code> 写成“或”。本轮因此分成下面三组来跑，避免一条过滤器误伤或漏跑。</p>
+<pre><code class="language-powershell">$ErrorActionPreference = "Stop"
+$root = Join-Path $HOME "rustrtc-0022-sdes-srtp"
+if (Test-Path $root) { throw "目录已存在，请换全新目录名，不要覆盖。" }
+git clone https://github.com/restsend/rustrtc.git $root
+if ($LASTEXITCODE -ne 0) { throw "克隆失败，停止。" }
+Set-Location $root
+$sha = "f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa"
+git checkout --detach $sha
+if ($LASTEXITCODE -ne 0) { throw "检出固定提交失败，停止。" }
+cargo +1.100.0 test --lib -- --nocapture --test-threads=1 create_offer_srtp_mode
+if ($LASTEXITCODE -ne 0) { throw "create_offer_srtp_mode 一组失败，停止。" }
+cargo +1.100.0 test --lib -- --nocapture --test-threads=1 create_answer_srtp_mode
+if ($LASTEXITCODE -ne 0) { throw "create_answer_srtp_mode 一组失败，停止。" }
+cargo +1.100.0 test --lib -- --nocapture --test-threads=1 srtp_mode_reinvite
+if ($LASTEXITCODE -ne 0) { throw "srtp_mode_reinvite 一组失败，停止。" }</code></pre>
+<p>Linux 教学电脑上已核对的等价命令，是在固定提交工作树根目录执行同样的三条 <code>cargo +1.100.0 test --lib -- --nocapture --test-threads=1 …</code>。跑完确认 <code>git rev-parse HEAD</code> 仍是上述固定提交。这三组不会跑到 <code>srtp_mode_ice_lite_answer_has_ice_attributes</code>；那是配方3，不是本课主路径。</p>
+<h3>3.2 本轮官方测试实际断言了什么</h3>
+<p>7 个测试全部 <code>ok</code>，退出码 0，stdout 没有打印 <code>inline:</code> 密钥。它们证明的是协商字段，不是收包。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>测试（peer_connection.rs）</th>
+<th>本轮</th>
+<th>实际断言（不是“已收到媒体”）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create_offer_srtp_mode</code>（10273–10300行）</td>
+<td>通过</td>
+<td>offer 为 RTP/SAVP，有 <code>a=crypto</code>，无 <code>ice-ufrag</code> / <code>candidate</code> / <code>fingerprint</code> / <code>setup</code></td>
+</tr>
+<tr>
+<td><code>create_offer_srtp_mode_includes_crypto</code>（10926–10949行）</td>
+<td>通过</td>
+<td>协议 RTP/SAVP；存在 <code>a=crypto</code>；值以 <code>1 AES_CM_128_HMAC_SHA1_80 inline:</code> 开头</td>
+</tr>
+<tr>
+<td><code>create_offer_srtp_mode_has_no_mki</code>（11102–11124行）</td>
+<td>通过</td>
+<td>同样的前缀，并以生存期 2^31 结尾；不含 MKI 记号 1:1</td>
+</tr>
+<tr>
+<td><code>create_answer_srtp_mode_uses_savp_profile</code>（11015–11044行）</td>
+<td>通过</td>
+<td>对 RTP/SAVP + <code>a=crypto</code> 的 offer，answer 也是 RTP/SAVP，且有 <code>a=crypto</code></td>
+</tr>
+<tr>
+<td><code>create_answer_srtp_mode_echoes_offer_mki_and_tag</code>（11053–11094行）</td>
+<td>通过</td>
+<td>见第4节：回显 tag、套件、生存期，不带 MKI</td>
+</tr>
+<tr>
+<td><code>srtp_mode_reinvite_keeps_our_key_and_takes_a_new_remote_key</code>（14401–14470行）</td>
+<td>通过</td>
+<td>见第4节边界</td>
+</tr>
+<tr>
+<td><code>srtp_mode_reinvite_suite_change_generates_a_new_key</code>（14478–14538行）</td>
+<td>通过</td>
+<td>见第4节边界</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些测试通过时不打印完整 SDP。下面的脱敏摘录来自教学诊断程序：复用 <code>sip()</code> + <code>Keying::Sdes</code> 走 <code>create_offer</code> / <code>create_answer</code>，<strong>不是官方测试的 stdout</strong>，也不是要求你运行的作业。诊断于 2026-11-27 18:29:03–18:29:38 JST 退出 0，编译约 34.33 秒。地址、端口、会话标识和密钥已删除。完整未脱敏文本只留在非公开验证目录。</p>
+<pre><code class="language-sdp">v=0
+o=- [sess] [vers] IN IP4 [addr]
+s=-
+c=IN IP4 [addr]
+t=0 0
+m=audio [port] RTP/SAVP 111
+a=sendrecv
+a=rtpmap:111 opus/48000/2
+a=fmtp:111 minptime=10;useinbandfec=1;stereo=1
+a=rtcp-mux
+a=rtcp:[rtcp-port]
+a=ssrc:[ssrc] cname:[cname]
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:&lt;redacted&gt;|2^31</code></pre>
+<p>阅读要点：协议是 <code>RTP/SAVP</code>，媒体级有 <code>a=crypto</code>，tag 为 1，套件为 <code>AES_CM_128_HMAC_SHA1_80</code>，带生存期 <code>|2^31</code>，没有指纹、没有 <code>a=setup</code>、没有 ICE 属性。<code>a=rtcp-mux</code> 与 <code>a=rtcp:</code> 同时出现，与 <code>sip()</code> 的 <code>RtcpMuxPolicy::Negotiate</code> 一致；官方 offer 测试并未断言这两行。诊断 offer 列出的是默认 Opus PT 111；官方测试也没有断言载荷类型。</p>
+<p>本轮没有跑 <code>tests/connectivity_keying.rs</code> 里的两端媒体互发，也没有对真实话机或公网验证。</p>
+<h2 id="section-4">4. 答案怎样处理 offer 里的 crypto</h2>
+<p><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-5.1.2">RFC 4568 §5.1.2</a> 要求：answer 必须接受 offer 里恰好一条有效的 crypto，并在答案里带回<strong>被选中的 tag 和套件</strong>，以及 answerer <strong>自己的发送密钥</strong>。 <a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-7.1.2">§7.1.2</a> 还要求：答案里的主密钥必须与 offer 中的不同。本库在 <code>build_description</code> 的 answer 分支里回显 tag、套件和生存期（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6017-L6044">6017–6044行</a>），并用本端密钥填充 <code>inline:</code>。</p>
+<p>MKI 是例外。<code>negotiate_sdes_mki</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L887-L896">887–896行</a>）写明：即使对端 SDP 宣告了 MKI，本端也绝不在发送方向带 MKI。测试 <code>create_answer_srtp_mode_echoes_offer_mki_and_tag</code> 的名称容易读错；它实际断言的是：对 tag <code>2</code>、套件 <code>AES_CM_128_HMAC_SHA1_32</code>、生存期 <code>2^31</code>、MKI <code>1:1</code> 的 offer，答案以 <code>2 AES_CM_128_HMAC_SHA1_32 inline:</code> 开头，以 <code>|2^31</code> 结尾，<strong>不得</strong>以 <code>1:1</code> 结尾。本轮该测试通过。</p>
+<p>教学诊断里，对同一形状的 offer（密钥已替换为运行时生成值，不转载上游夹具密钥）得到的脱敏答案行是：</p>
+<pre><code class="language-sdp">m=audio [port] RTP/SAVP 111
+a=sendrecv
+a=rtpmap:111 opus/48000/2
+a=fmtp:111 minptime=10;useinbandfec=1;stereo=1
+a=rtcp:[rtcp-port]
+a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:&lt;redacted&gt;|2^31</code></pre>
+<p>阅读要点：tag 变成 2，套件变成 <code>AES_CM_128_HMAC_SHA1_32</code>，生存期仍在，没有 MKI。这份诊断 offer 没有 <code>a=rtcp-mux</code>，所以答案只有 <code>a=rtcp:</code>。官方测试没有断言编解码列表；不要把这里的 PT 111 写成测试已证明的交叉结果。</p>
+<p>若诊断 offer 自己不带生存期，答案也就不会回显 <code>|2^31</code>。这与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6043-L6044">6043–6044行</a> 只在解析到生存期时才重建 <code>tail</code> 一致。库自己生成的 offer 默认带 <code>|2^31</code>。</p>
+<p>re-INVITE 是边界，不是本课主路径。README「SDES Keying」段（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#sdes-keying-keyingsdes">268–271行</a>）写明：答案保持我方正在使用的发送密钥，避免对端在通话中丢掉我方音频；对端在同一套件下换新密钥时，在 offer/answer 完成、信令回到 <code>Stable</code> 后再应用；只有套件变化才生成新的本端密钥。本轮两个官方测试通过，分别对应这两点：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L14401-L14470">14401–14470行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L14478-L14538">14478–14538行</a>。实现上，后一次 offer/answer 若套件相同，会复用上一份本地描述里的本端 <code>key_params</code>（<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6047-L6062">6047–6062行</a>）。这仍不是话机收包证据。</p>
+<figure class="diagram">
+<pre>图2 · answer 对 offer 的 crypto 做什么
+offer:  a=crypto:&lt;tag&gt; &lt;suite&gt; inline:&lt;redacted&gt;[|lifetime][|MKI]
+        ↓  接受恰好一条有效行
+answer: a=crypto:&lt;同一tag&gt; &lt;同一套件&gt; inline:&lt;本端新密钥&gt;[|同一lifetime]
+        ↓
+回显 tag、套件、生存期；不回显、不发送 MKI
+本端密钥必须与 offer 中的不同（RFC 4568 §5.1.2 / §7.1.2）</pre>
+<figcaption>答案回显选中行的 tag、套件和生存期，不带回 MKI，并使用本端密钥。</figcaption>
+</figure>
+<h2 id="section-5">5. 容易误判的边界</h2>
+<ul>
+<li><strong>不要粘贴真实密钥。</strong><code>inline:</code> 后面是明文密钥材料。公开课文、摘录、证据卡只用无效占位或 <code>inline:&lt;redacted&gt;</code>。上游测试夹具里出现过的密钥，本课不转载。</li>
+<li><strong>Sdes 不是 Dtls。</strong><code>Keying::Sdes</code> 靠媒体级 <code>a=crypto</code>；<code>Keying::Dtls</code> 靠指纹和 DTLS 握手。本课 SDP 不应出现 <code>a=fingerprint</code> / <code>a=setup</code>。不要把第9–12课的 DTLS-SRTP 路径抄到这里。</li>
+<li><strong>sip()+Sdes 不是 IceLite。</strong>配方2只改 <code>keying</code>，选路仍是 <code>Sdp</code>。配方3才是 <code>sip()</code> 再设 <code>Connectivity::IceLite</code> 与 <code>Keying::Sdes</code>（例如 Linphone）。本课没有把 <code>srtp_mode_ice_lite_answer_has_ice_attributes</code> 当作主路径来跑或来教。</li>
+<li><strong>re-INVITE：同一套件保持我方发送密钥，套件变了才换新密钥。</strong>对端的新密钥在回到 <code>Stable</code> 后才应用。不要把“保持我方密钥”读成“双方密钥都不许变”。</li>
+<li><strong>测试通过不等于已经收到媒体。</strong>本轮 7 个测试核的是协议、<code>a=crypto</code> 形状和 re-INVITE 密钥策略。没有发送或接收 SRTP 音频，也没有真实话机。<code>Connected</code> 同样不是收包证据。</li>
+<li><strong>不要宣称九格都跑过。</strong>库称任意 Connectivity 可配任意 Keying；那是库的声明。本课只跑了 <code>Sdp</code> × <code>Sdes</code> 这一格的协商测试。</li>
+<li><strong>没有官方示例文件。</strong>不要把第21课的 <code>rtp_track_event</code> 改成 Sdes 再当成官方路径。不要为了让某条路径变绿去改上游。</li>
+<li><strong>不讲 SIP 信令，不做生产 UA。</strong>把 SDP 放进 INVITE / 200 OK 是 rsipstack 和应用的事。SDP 本身还需要另外的安全保护，见 RFC 4568。</li>
+</ul>
+<h2 id="section-6">6. 交一张证据卡，独立自测</h2>
+<figure class="diagram">
+<pre>图3 · 什么算本轮证据，什么不算
+算：7 个官方库测试在 Linux 教学电脑上全部通过，退出码 0（18:28:22–18:28:23 JST）
+算：offer/answer 断言了 RTP/SAVP、a=crypto 存在、默认套件前缀、无指纹/无 ICE
+算：answer 回显 tag/套件/生存期、不带 MKI；re-INVITE 密钥策略的两个测试通过
+算：标明来源的脱敏诊断 SDP（协议与 crypto 形状；密钥已删除）
+不算：官方测试 stdout 里的完整 SDP（本轮本来就没有打印）
+不算：真实话机、实际 SRTP 收包、Windows 成功、公网、IceLite 配方3
+不算：九格 Connectivity × Keying 都已跑过，或已经掌握</pre>
+<figcaption>证据边界只对这次固定提交上的运行和测试负责，不是掌握声明。</figcaption>
+</figure>
+<h3>6.1 证据卡</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>你要填写的证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>版本与环境</td>
+<td>上游 SHA、实际系统/工具链、真实运行或只读了课文</td>
+</tr>
+<tr>
+<td>配置写法</td>
+<td>是否从 sip() 起步再设 Keying::Sdes；有没有误用 webrtc() 或 Dtls</td>
+</tr>
+<tr>
+<td>官方测试</td>
+<td>三组命令的退出码；7 个测试名是否均为 ok；stdout 有没有泄出密钥</td>
+</tr>
+<tr>
+<td>SDP 形状</td>
+<td>协议是否为 RTP/SAVP；是否有媒体级 a=crypto；是否误出现指纹或 ICE</td>
+</tr>
+<tr>
+<td>答案处理</td>
+<td>tag/套件/生存期是否回显；MKI 是否被带进答案；是否复用了 offer 密钥</td>
+</tr>
+<tr>
+<td>密钥保护</td>
+<td>分享前是否已把 inline 材料写成 redacted 或无效占位</td>
+</tr>
+<tr>
+<td>结论边界</td>
+<td>已证实哪一步；有没有把测试通过、Connected 或诊断 SDP 写成话机收包成功</td>
+</tr>
+</tbody>
+</table></div>
+<p>你的退出码若与本轮相同，只说明同一提交上这些官方测试仍然通过，不是已经掌握。分享卡片前，删掉 ICE 密码、ufrag、指纹、真实 <code>a=crypto</code> 密钥和完整未脱敏 SDP。本课不需要这些秘密来批改。</p>
+<h3>6.2 八道自测</h3>
+<p>先遮住答案。每题都可单独判断，不需要等待聊天回复下一题。八道答案篇幅相同。</p>
+<h3>第1题</h3>
+<p>为什么第21课用默认的 <code>sip()</code>，本课要把 <code>keying</code> 改成 <code>Keying::Sdes</code>？</p>
+<details>
+<summary>显示第1题答案</summary>
+<p>sip()默认Keying::None，SDP是RTP/AVP无a=crypto，适合纯RTP。本课要SDES-SRTP，须在sip()后把keying设为Keying::Sdes。不要用纯RTP对接，也不要改回webrtc()或改成Keying::Dtls。</p>
+</details>
+<h3>第2题</h3>
+<p><code>Keying::Sdes</code> 在 API 和 SDP 上分别改了什么？这份 SDP 会不会出现 DTLS 指纹？</p>
+<details>
+<summary>显示第2题答案</summary>
+<p>从sip()起步以后只改keying为Keying::Sdes，选路字段仍然是Sdp。协商时把媒体协议写成RTP/SAVP，并且在媒体级写入a=crypto。而指纹和a=setup只在Keying::Dtls时才会添加，所以Sdes的SDP里不应该出现这两项。</p>
+</details>
+<h3>第3题</h3>
+<p>怎样写出 <code>sip()</code>+Sdes 的配置？本课的可运行载体是什么？</p>
+<details>
+<summary>显示第3题答案</summary>
+<p>两种写法等价：先调用sip()再设keying为Keying::Sdes，或用Builder的sip().keying(Keying::Sdes)。examples里没有使用Sdes的官方示例。本课可运行的载体是同一提交上的官方库测试，不要为了补示例去改上游。</p>
+</details>
+<h3>第4题</h3>
+<p>本轮在 Linux 教学电脑上跑官方测试，实际证明了什么、没有证明什么？</p>
+<details>
+<summary>显示第4题答案</summary>
+<p>2026年11月27日18:28:22至18:28:23（日本标准时间），在Linux教学电脑上七个官方库测试全部通过，退出码均是0。它们断言了RTP/SAVP、a=crypto存在以及套件前缀。其stdout未打印密钥。这不是已从话机收到SRTP音频的证据。</p>
+</details>
+<h3>第5题</h3>
+<p>回答一条 SDES offer 时，答案会怎样处理 tag、套件、生存期和 MKI？</p>
+<details>
+<summary>显示第5题答案</summary>
+<p>依照RFC4568第5.1.2节和第7.1.2节，答案必须回显选中的标签和套件，并给出自己的发送密钥，且不得复用offer里的密钥。本库还会回显生存期，但故意不回显、也不发送MKI。本轮相关官方测试已经通过；测试名虽含mki，实际的断言却是答案不得带上MKI。</p>
+</details>
+<h3>第6题</h3>
+<p>为什么不能把 <code>a=crypto</code> 的 <code>inline</code> 密钥写进公开课文或证据卡？</p>
+<details>
+<summary>显示第6题答案</summary>
+<p>a=crypto的inline参数是明文密钥材料。RFC4568要求另外用能保密并保护完整性的协议来保护整份SDP；在SIP里建议使用SIPS或S/MIME。课文、摘录和证据卡只用无效占位或inline:&lt;redacted&gt;。切勿把真实或夹具密钥写进公开材料。</p>
+</details>
+<h3>第7题</h3>
+<p><code>Sdes</code> 是 <code>Dtls</code> 吗？<code>sip()</code>+Sdes 是不是配方3的 IceLite？本课有没有跑完九格？</p>
+<details>
+<summary>显示第7题答案</summary>
+<p>Keying::Sdes靠媒体级a=crypto换密钥，不是靠指纹和DTLS握手的Keying::Dtls。sip()加Sdes只改密钥，选路仍是Sdp，并非配方3的IceLite加Sdes。配方3是下一步，本课未当主路径来教。也不要把九格组合都写成已经跑过。</p>
+</details>
+<h3>第8题</h3>
+<p>re-INVITE 时什么情况下保持我方密钥、什么情况下生成新密钥？测试通过等于收到 SRTP 媒体吗？</p>
+<details>
+<summary>显示第8题答案</summary>
+<p>同一套件的re-INVITE会保持我方发送密钥，并在信令回到Stable之后采用对端的新密钥；只有套件变了才会重新生成新的本端密钥。官方测试已经覆盖了这条边界，仍绝不是真实话机收包证据。测试通过或变成Connected，都不等于已经完成一次SRTP的媒体交换。</p>
+</details>
+<h3>6.3 间隔回忆与来源</h3>
+<p>明天先不看代码，写出从 <code>sip()</code> 改到 <code>Keying::Sdes</code> 的两种 API 写法，并画出“RTP/AVP 无 crypto → RTP/SAVP 加媒体级 a=crypto、无指纹”的对照。隔一天再默写：答案回显 tag、套件和生存期，但不带 MKI；<code>inline</code> 密钥是必须另加保护的明文材料。可以把你的证据卡发来，再针对实际缺口继续提问，不因课文已经写完就自动记为掌握。</p>
+<p>主读源码：<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/config.rs#L171-L178">Keying 与 sip()，config.rs 171–178、981–989、1222–1225行</a>，以及 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L5754-L5758">build_description 里的 RTP/SAVP 与 a=crypto，5754–5758、6017–6067行</a>。先读这两处和 README 配方2，再按需要打开第3节列出的测试，不展开 DTLS 或 ICE-lite 专题。</p>
+<p>其他核对来源：</p>
+<ul>
+<li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#configuration">README Configuration</a> 与 <a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/README.md#sdes-keying-keyingsdes">SDES Keying</a>：配方2，以及 re-INVITE 保持我方发送密钥、在 Stable 时应用对端新密钥、套件变化才生成新密钥。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-4">RFC 4568 §4</a>：<code>a=crypto</code> 的媒体级格式；摘要与适用性段要求另有协议保护 SDP 中的密钥材料。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-5.1.2">RFC 4568 §5.1.2</a>、<a href="https://www.rfc-editor.org/rfc/rfc4568.html#section-7.1.2">§7.1.2</a>：答案回显 tag 与套件，并给出与 offer 不同的本端发送密钥。</li>
+<li><a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L770-L775">generate_sdes_key_params 770–775行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L887-L896">negotiate_sdes_mki 887–896行</a>、<a href="https://github.com/restsend/rustrtc/blob/f1b59bf6e85fa529dc0c8ed94a91e17a00cd8afa/src/peer_connection.rs#L6274-L6292">populate_media_capabilities 中的 DTLS 门闩 6274–6292行</a>。</li>
+<li><a href="0021-sip-config.html">第21课</a>：默认 <code>sip()</code> 与纯 RTP 协商；不把上一课结论抄到这里。</li>
+<li><a href="../assets/0022-sdes-srtp/VALIDATION.md">本轮脱敏验证摘要</a>：Linux 教学电脑上的运行与测试结果。不是用户本机运行记录。</li>
+<li><a href="../assets/0022-sdes-srtp/sdp-excerpts.md">脱敏 SDP 摘录</a>：诊断程序的字段摘录，不是官方测试 stdout。</li>
+</ul>
+</main><nav class="next"><a href="0021-sip-config.html">上一课：0021 按对端选择 sip()（rtp_track_event）</a><a href="../index.html">返回课程目录</a></nav><footer>仅 Linux 教学电脑已跑过所列 7 个官方库测试（本轮退出 0）。Windows、真实话机、实际 SRTP 媒体交换、公网与 IceLite 配方未测。版本及证据边界见正文。</footer></body></html>
